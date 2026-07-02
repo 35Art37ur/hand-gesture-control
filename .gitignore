@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtuelle Umgebungen
+venv/
+venv311/
+.venv/
+env/
+
+# Heruntergeladenes MediaPipe-Modell (groß, wird automatisch neu geladen)
+hand_landmarker.task
+
+# Trainingsdaten (meist zu groß fürs Repo + ggf. personenbezogen)
+#trainingsdaten/
+
+# Trainiertes Modell (optional: auskommentieren, falls du es versionieren willst)
+#gesture_model.h5
+#label_map.json
+#training_history.png
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
