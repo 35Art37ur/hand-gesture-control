@@ -1,18 +1,28 @@
 """
-live_inference.py
-------------------
+live_inference2.py
+-------------------
 Erkennt die trainierten dynamischen Gesten in Echtzeit ueber die Webcam
 und loest je nach Geste eine Aktion aus (Tastendruck / Scroll via pyautogui).
+
+Funktionsweise (echtes Sliding Window):
+Es werden fortlaufend die letzten SEQUENZ_LAENGE (20) Frames gespeichert.
+Bei JEDEM neuen Frame wird mit genau diesem Fenster (den letzten 20 Frames)
+neu vorhergesagt -- nicht nur einmalig, sobald der Puffer zum ersten Mal
+voll ist. Dadurch haengt die Erkennung nicht mehr davon ab, an welchem
+zufaelligen Punkt die Aufnahme "gestartet" hat (z.B. mitten in einer
+Geste, weil die Hand zufaellig gerade zu diesem Zeitpunkt hochgehalten
+wurde). Stattdessen wird kontinuierlich das jeweils aktuellste 20-Frame-
+Fenster ausgewertet, aehnlich wie ein gleitender Durchschnitt.
 
 Voraussetzung: train_model.py wurde bereits ausgefuehrt und hat ein
 Modellverzeichnis unter 'modelle/model_XXX/' mit gesture_model.h5 +
 label_map.json erzeugt.
 
 Aufruf (nutzt automatisch das ZULETZT trainierte Modell):
-    python live_inference.py
+    python live_inference2.py
 
 Aufruf mit einem bestimmten, aelteren Modell:
-    python live_inference.py --model modelle/model_003
+    python live_inference2.py --model modelle/model_003
 
 Steuerung:
     'q' = Beenden
@@ -38,6 +48,11 @@ MODEL_PATH = "hand_landmarker.task"
 SEQUENZ_LAENGE = 20
 KONFIDENZ_SCHWELLE = 0.85     # Nur Aktionen ausloesen, wenn Modell sich sicher genug ist
 COOLDOWN_SEKUNDEN = 1.0       # Mindestabstand zwischen zwei ausgeloesten Aktionen
+VORHERSAGE_INTERVALL = 1      # Alle wie viele Frames neu vorhergesagt wird.
+# 1 = jeder Frame (reaktionsschnellste Variante,
+# aber hoehere CPU-Last). Bei Rucklern z.B. auf
+# 3-5 erhoehen -> spart Rechenzeit, die Erkennung
+# bleibt aber weiterhin ein echtes Sliding Window.
 
 
 def neuestes_modell_verzeichnis(basis_ordner):
@@ -149,8 +164,13 @@ def extrahiere_features(hand_landmarks):
 # ---------------------------------------------------------------------------
 # 4. Sliding Window Buffer fuer die letzten N Frames
 # ---------------------------------------------------------------------------
+# deque mit maxlen sorgt automatisch dafuer, dass beim Anhaengen eines neuen
+# Frames der AELTESTE Frame rausfaellt, sobald der Puffer voll ist -- der
+# Puffer enthaelt also IMMER die letzten SEQUENZ_LAENGE Frames, kontinuierlich
+# aktualisiert bei jedem einzelnen Kamera-Frame.
 frame_buffer = collections.deque(maxlen=SEQUENZ_LAENGE)
 letzte_aktion_zeit = 0.0
+frame_zaehler = 0
 
 cap = cv2.VideoCapture(0)
 print("Live-Erkennung gestartet. Druecke 'q' zum Beenden.")
@@ -174,12 +194,15 @@ with HandLandmarker.create_from_options(options) as landmarker:
             frame_buffer.append(frame_koordinaten)
             frame = draw_landmarks_on_image(frame, result)
         else:
-            # Optional: Buffer leeren, wenn Hand verschwindet, damit keine
+            # Hand ist komplett verschwunden -> Puffer leeren, damit keine
             # "kaputten" Sequenzen (Hand weg -> wieder da) erkannt werden.
             frame_buffer.clear()
 
-        # Sobald der Buffer voll ist, Vorhersage machen
-        if len(frame_buffer) == SEQUENZ_LAENGE:
+        frame_zaehler += 1
+
+        # Sobald genug Frames vorhanden sind, wird alle VORHERSAGE_INTERVALL
+        # Frames neu vorhergesagt (echtes Sliding Window, kein Einmal-Schuss).
+        if len(frame_buffer) == SEQUENZ_LAENGE and frame_zaehler % VORHERSAGE_INTERVALL == 0:
             eingabe = np.expand_dims(np.array(frame_buffer, dtype=np.float32), axis=0)
             vorhersage = model.predict(eingabe, verbose=0)[0]
             klassen_idx = int(np.argmax(vorhersage))
@@ -194,7 +217,9 @@ with HandLandmarker.create_from_options(options) as landmarker:
                     and (jetzt - letzte_aktion_zeit) >= COOLDOWN_SEKUNDEN):
                 fuehre_aktion_aus(geste_name)
                 letzte_aktion_zeit = jetzt
-                frame_buffer.clear()  # Buffer leeren, damit dieselbe Geste nicht doppelt feuert
+                # Puffer NICHT leeren: das Sliding Window laeuft einfach weiter.
+                # Der Cooldown allein verhindert, dass dieselbe Geste sofort
+                # nochmal (auf demselben Fenster) feuert.
 
         # --- Anzeige ---
         cv2.putText(frame, f"Buffer: {len(frame_buffer)}/{SEQUENZ_LAENGE}", (10, 30),
