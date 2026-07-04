@@ -13,7 +13,8 @@ env/
 hand_landmarker.task
 
 # Trainingsdaten (meist zu groß fürs Repo + ggf. personenbezogen)
-#trainingsdaten/
+trainingsdaten/
+mirrored_data/
 
 # Trainiertes Modell (optional: auskommentieren, falls du es versionieren willst)
 gesture_model.h5
