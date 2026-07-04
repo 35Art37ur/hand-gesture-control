@@ -14,7 +14,8 @@ WICHTIG: Fuehre dieses Skript fuer JEDE der 4 Gesten separat aus:
     python record_gesture.py --geste wischen_rechts
     python record_gesture.py --geste wischen_links
     python record_gesture.py --geste kreis_uhrzeigersinn
-    python record_gesture.py --geste kreis_gegen_uhrzeigersinn
+
+
 """
 
 import argparse
