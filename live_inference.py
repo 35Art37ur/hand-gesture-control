@@ -4,15 +4,24 @@ live_inference.py
 Erkennt die trainierten dynamischen Gesten in Echtzeit ueber die Webcam
 und loest je nach Geste eine Aktion aus (Tastendruck / Scroll via pyautogui).
 
-Voraussetzung: train_model.py wurde bereits ausgefuehrt und hat ein
-Modellverzeichnis unter 'modelle/model_XXX/' mit gesture_model.h5 +
-label_map.json erzeugt.
+Funktionsweise: Sobald 20 Frames mit erkannter Hand gesammelt wurden, wird
+EINMALIG vorhergesagt und der Puffer danach komplett geleert. Das kann
+problematisch sein, wenn der erste gespeicherte Frame zufaellig schon
+mitten in einer Handbewegung liegt (z.B. weil die Hand genau zu diesem
+Zeitpunkt hochgehalten wurde) -- siehe live_inference2.py fuer eine
+Variante mit echtem Sliding Window, die dieses Problem behebt.
 
-Aufruf (nutzt automatisch das ZULETZT trainierte Modell):
+Voraussetzung: train_model0.py wurde bereits ausgefuehrt. Dieses erzeugt pro
+Lauf einen Vergleichs-Batch 'modelle/vergleich_XXX/' mit mehreren trainierten
+Architekturen (z.B. gru_klein, lstm_mittel, cnn_gross) sowie einer Datei
+'bestes_modell.txt', die angibt, welche Architektur die hoechste
+Test-Accuracy erreicht hat.
+
+Aufruf (nutzt automatisch das EMPFOHLENE Modell aus dem NEUESTEN Batch):
     python live_inference.py
 
-Aufruf mit einem bestimmten, aelteren Modell:
-    python live_inference.py --model modelle/model_003
+Aufruf mit einer bestimmten Architektur / einem bestimmten Batch:
+    python live_inference.py --model modelle/vergleich_003/cnn_gross
 
 Steuerung:
     'q' = Beenden
@@ -20,7 +29,6 @@ Steuerung:
 
 import argparse
 import collections
-import glob
 import json
 import os
 import re
@@ -40,37 +48,62 @@ KONFIDENZ_SCHWELLE = 0.85     # Nur Aktionen ausloesen, wenn Modell sich sicher 
 COOLDOWN_SEKUNDEN = 1.0       # Mindestabstand zwischen zwei ausgeloesten Aktionen
 
 
-def neuestes_modell_verzeichnis(basis_ordner):
-    """Findet automatisch das Modellverzeichnis mit der hoechsten Nummer
-    (model_001, model_002, ...), also das zuletzt trainierte Modell."""
+def neuester_batch_ordner(basis_ordner):
+    """Findet automatisch den Vergleichs-Batch mit der hoechsten Nummer
+    (vergleich_001, vergleich_002, ...), also den zuletzt trainierten Batch."""
     kandidaten = []
     for name in os.listdir(basis_ordner):
         pfad = os.path.join(basis_ordner, name)
         if os.path.isdir(pfad):
-            match = re.fullmatch(r"model_(\d+)", name)
+            match = re.fullmatch(r"vergleich_(\d+)", name)
             if match:
                 kandidaten.append((int(match.group(1)), pfad))
 
     if not kandidaten:
         raise RuntimeError(
-            f"Kein trainiertes Modell in '{basis_ordner}/model_XXX' gefunden. "
-            f"Bitte zuerst train_model.py ausfuehren."
+            f"Kein Vergleichs-Batch in '{basis_ordner}/vergleich_XXX' gefunden. "
+            f"Bitte zuerst train_model0.py ausfuehren."
         )
 
     kandidaten.sort(key=lambda x: x[0])
     return kandidaten[-1][1]  # Pfad mit der hoechsten Nummer
 
 
+def ermittele_modell_ordner(explizit_angegeben, basis_ordner):
+    """Falls --model gesetzt wurde, wird genau dieser Pfad genutzt. Sonst wird
+    automatisch der neueste Batch geoeffnet und dort das per 'bestes_modell.txt'
+    empfohlene (= Architektur mit hoechster Test-Accuracy) Modell verwendet."""
+    if explizit_angegeben:
+        return explizit_angegeben
+
+    batch_ordner = neuester_batch_ordner(basis_ordner)
+    marker_datei = os.path.join(batch_ordner, "bestes_modell.txt")
+
+    if os.path.exists(marker_datei):
+        with open(marker_datei, "r") as f:
+            beste_architektur = f.read().strip()
+        return os.path.join(batch_ordner, beste_architektur)
+
+    # Fallback, falls kein Marker vorhanden ist (z.B. Batch von Hand angelegt):
+    # einfach den ersten gefundenen Architektur-Unterordner nehmen.
+    unterordner = sorted([
+        d for d in os.listdir(batch_ordner)
+        if os.path.isdir(os.path.join(batch_ordner, d))
+    ])
+    if not unterordner:
+        raise RuntimeError(f"Kein Architektur-Unterordner in '{batch_ordner}' gefunden.")
+    return os.path.join(batch_ordner, unterordner[0])
+
+
 parser = argparse.ArgumentParser(description="Live-Erkennung dynamischer Handgesten.")
 parser.add_argument("--model", type=str, default=None,
-                    help="Pfad zu einem bestimmten Modellordner, z.B. modelle/model_003. "
-                         "Ohne Angabe wird automatisch das zuletzt trainierte Modell genutzt.")
+                     help="Pfad zu einem bestimmten Architektur-Ordner, z.B. "
+                          "modelle/vergleich_003/cnn_gross. Ohne Angabe wird "
+                          "automatisch das empfohlene Modell des neuesten "
+                          "Vergleichs-Batches genutzt.")
 args = parser.parse_args()
 
-if args.model:
-    MODELL_ORDNER = args.model
-else:
-    MODELL_ORDNER = neuestes_modell_verzeichnis(MODELLE_BASIS_ORDNER)
+MODELL_ORDNER = ermittele_modell_ordner(args.model, MODELLE_BASIS_ORDNER)
 
 MODELL_DATEI = os.path.join(MODELL_ORDNER, "gesture_model.h5")
 LABEL_MAP_DATEI = os.path.join(MODELL_ORDNER, "label_map.json")
@@ -147,7 +180,7 @@ def extrahiere_features(hand_landmarks):
 
 
 # ---------------------------------------------------------------------------
-# 4. Sliding Window Buffer fuer die letzten N Frames
+# 4. Puffer fuer die letzten N Frames (Einmal-Aufnahme, kein Sliding Window)
 # ---------------------------------------------------------------------------
 frame_buffer = collections.deque(maxlen=SEQUENZ_LAENGE)
 letzte_aktion_zeit = 0.0
@@ -188,6 +221,8 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
             aktuelle_geste_text = f"{geste_name} ({konfidenz:.2f})"
             aktuelle_konfidenz = konfidenz
+
+            print(f"Erkannt: {geste_name}  (Konfidenz: {konfidenz:.2f})")
 
             jetzt = time.time()
             if (konfidenz >= KONFIDENZ_SCHWELLE

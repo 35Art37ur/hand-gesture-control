@@ -4,25 +4,34 @@ live_inference2.py
 Erkennt die trainierten dynamischen Gesten in Echtzeit ueber die Webcam
 und loest je nach Geste eine Aktion aus (Tastendruck / Scroll via pyautogui).
 
-Funktionsweise (echtes Sliding Window):
-Es werden fortlaufend die letzten SEQUENZ_LAENGE (20) Frames gespeichert.
-Bei JEDEM neuen Frame wird mit genau diesem Fenster (den letzten 20 Frames)
-neu vorhergesagt -- nicht nur einmalig, sobald der Puffer zum ersten Mal
-voll ist. Dadurch haengt die Erkennung nicht mehr davon ab, an welchem
-zufaelligen Punkt die Aufnahme "gestartet" hat (z.B. mitten in einer
-Geste, weil die Hand zufaellig gerade zu diesem Zeitpunkt hochgehalten
-wurde). Stattdessen wird kontinuierlich das jeweils aktuellste 20-Frame-
-Fenster ausgewertet, aehnlich wie ein gleitender Durchschnitt.
+Funktionsweise (Sliding Window MIT Rohpuffer-Subsampling):
+Es werden fortlaufend die letzten ROH_PUFFER_LAENGE (40) Frames gespeichert
+(Rohpuffer). Fuer die Vorhersage wird daraus aber nur JEDES ZWEITE Frame
+verwendet (Index 0, 2, 4, ..., 38), was genau SEQUENZ_LAENGE (20) Frames
+ergibt -- exakt die Eingabegroesse, die das trainierte Modell erwartet.
 
-Voraussetzung: train_model.py wurde bereits ausgefuehrt und hat ein
-Modellverzeichnis unter 'modelle/model_XXX/' mit gesture_model.h5 +
-label_map.json erzeugt.
+Der Trick dahinter: Das ausgewertete 20-Frame-Fenster deckt dadurch den
+ZEITRAUM von 40 echten Kamera-Frames ab, also die doppelte Zeitspanne wie
+zuvor. Das hilft insbesondere bei Kreisgesten, die oft laenger als 20
+Frames zum vollstaendigen Ausfuehren brauchen und sonst als (aehnlich
+aussehende) Wischgesten fehlerkannt werden, da sie in einem reinen
+20-Frame-Fenster meist nur unvollstaendig erfasst werden.
 
-Aufruf (nutzt automatisch das ZULETZT trainierte Modell):
+WICHTIG: Das trainierte Modell selbst wird NICHT veraendert und muss NICHT
+neu trainiert werden -- es bekommt weiterhin exakt 20 Frames als Eingabe,
+nur eben mit doppeltem zeitlichen Abstand zwischen den Frames.
+
+Voraussetzung: train_model0.py wurde bereits ausgefuehrt. Dieses erzeugt pro
+Lauf einen Vergleichs-Batch 'modelle/vergleich_XXX/' mit mehreren trainierten
+Architekturen (z.B. gru_klein, lstm_mittel, cnn_gross) sowie einer Datei
+'bestes_modell.txt', die angibt, welche Architektur die hoechste
+Test-Accuracy erreicht hat.
+
+Aufruf (nutzt automatisch das EMPFOHLENE Modell aus dem NEUESTEN Batch):
     python live_inference2.py
 
-Aufruf mit einem bestimmten, aelteren Modell:
-    python live_inference2.py --model modelle/model_003
+Aufruf mit einer bestimmten Architektur / einem bestimmten Batch:
+    python live_inference2.py --model modelle/vergleich_003/cnn_gross
 
 Steuerung:
     'q' = Beenden
@@ -30,7 +39,6 @@ Steuerung:
 
 import argparse
 import collections
-import glob
 import json
 import os
 import re
@@ -45,47 +53,75 @@ from tensorflow.keras.models import load_model
 # --- KONFIGURATION ---
 MODELLE_BASIS_ORDNER = "modelle"
 MODEL_PATH = "hand_landmarker.task"
-SEQUENZ_LAENGE = 20
+SEQUENZ_LAENGE = 20           # Erwartete Eingabegroesse des trainierten Modells (NICHT aendern,
+                              # ausser das Modell wurde mit anderer Laenge neu trainiert!)
+SUBSAMPLE_SCHRITT = 2         # Jedes 2. Frame aus dem Rohpuffer wird verwendet
+ROH_PUFFER_LAENGE = SEQUENZ_LAENGE * SUBSAMPLE_SCHRITT  # 40 rohe Kamera-Frames
 KONFIDENZ_SCHWELLE = 0.85     # Nur Aktionen ausloesen, wenn Modell sich sicher genug ist
 COOLDOWN_SEKUNDEN = 1.0       # Mindestabstand zwischen zwei ausgeloesten Aktionen
 VORHERSAGE_INTERVALL = 1      # Alle wie viele Frames neu vorhergesagt wird.
-# 1 = jeder Frame (reaktionsschnellste Variante,
-# aber hoehere CPU-Last). Bei Rucklern z.B. auf
-# 3-5 erhoehen -> spart Rechenzeit, die Erkennung
-# bleibt aber weiterhin ein echtes Sliding Window.
+                              # 1 = jeder Frame (reaktionsschnellste Variante,
+                              # aber hoehere CPU-Last). Bei Rucklern z.B. auf
+                              # 3-5 erhoehen -> spart Rechenzeit, die Erkennung
+                              # bleibt aber weiterhin ein echtes Sliding Window.
 
 
-def neuestes_modell_verzeichnis(basis_ordner):
-    """Findet automatisch das Modellverzeichnis mit der hoechsten Nummer
-    (model_001, model_002, ...), also das zuletzt trainierte Modell."""
+def neuester_batch_ordner(basis_ordner):
+    """Findet automatisch den Vergleichs-Batch mit der hoechsten Nummer
+    (vergleich_001, vergleich_002, ...), also den zuletzt trainierten Batch."""
     kandidaten = []
     for name in os.listdir(basis_ordner):
         pfad = os.path.join(basis_ordner, name)
         if os.path.isdir(pfad):
-            match = re.fullmatch(r"model_(\d+)", name)
+            match = re.fullmatch(r"vergleich_(\d+)", name)
             if match:
                 kandidaten.append((int(match.group(1)), pfad))
 
     if not kandidaten:
         raise RuntimeError(
-            f"Kein trainiertes Modell in '{basis_ordner}/model_XXX' gefunden. "
-            f"Bitte zuerst train_model.py ausfuehren."
+            f"Kein Vergleichs-Batch in '{basis_ordner}/vergleich_XXX' gefunden. "
+            f"Bitte zuerst train_model0.py ausfuehren."
         )
 
     kandidaten.sort(key=lambda x: x[0])
     return kandidaten[-1][1]  # Pfad mit der hoechsten Nummer
 
 
+def ermittele_modell_ordner(explizit_angegeben, basis_ordner):
+    """Falls --model gesetzt wurde, wird genau dieser Pfad genutzt. Sonst wird
+    automatisch der neueste Batch geoeffnet und dort das per 'bestes_modell.txt'
+    empfohlene (= Architektur mit hoechster Test-Accuracy) Modell verwendet."""
+    if explizit_angegeben:
+        return explizit_angegeben
+
+    batch_ordner = neuester_batch_ordner(basis_ordner)
+    marker_datei = os.path.join(batch_ordner, "bestes_modell.txt")
+
+    if os.path.exists(marker_datei):
+        with open(marker_datei, "r") as f:
+            beste_architektur = f.read().strip()
+        return os.path.join(batch_ordner, beste_architektur)
+
+    # Fallback, falls kein Marker vorhanden ist (z.B. Batch von Hand angelegt):
+    # einfach den ersten gefundenen Architektur-Unterordner nehmen.
+    unterordner = sorted([
+        d for d in os.listdir(batch_ordner)
+        if os.path.isdir(os.path.join(batch_ordner, d))
+    ])
+    if not unterordner:
+        raise RuntimeError(f"Kein Architektur-Unterordner in '{batch_ordner}' gefunden.")
+    return os.path.join(batch_ordner, unterordner[0])
+
+
 parser = argparse.ArgumentParser(description="Live-Erkennung dynamischer Handgesten.")
 parser.add_argument("--model", type=str, default=None,
-                    help="Pfad zu einem bestimmten Modellordner, z.B. modelle/model_003. "
-                         "Ohne Angabe wird automatisch das zuletzt trainierte Modell genutzt.")
+                     help="Pfad zu einem bestimmten Architektur-Ordner, z.B. "
+                          "modelle/vergleich_003/cnn_gross. Ohne Angabe wird "
+                          "automatisch das empfohlene Modell des neuesten "
+                          "Vergleichs-Batches genutzt.")
 args = parser.parse_args()
 
-if args.model:
-    MODELL_ORDNER = args.model
-else:
-    MODELL_ORDNER = neuestes_modell_verzeichnis(MODELLE_BASIS_ORDNER)
+MODELL_ORDNER = ermittele_modell_ordner(args.model, MODELLE_BASIS_ORDNER)
 
 MODELL_DATEI = os.path.join(MODELL_ORDNER, "gesture_model.h5")
 LABEL_MAP_DATEI = os.path.join(MODELL_ORDNER, "label_map.json")
@@ -162,15 +198,26 @@ def extrahiere_features(hand_landmarks):
 
 
 # ---------------------------------------------------------------------------
-# 4. Sliding Window Buffer fuer die letzten N Frames
+# 4. Sliding Window Rohpuffer fuer die letzten ROH_PUFFER_LAENGE (40) Frames
 # ---------------------------------------------------------------------------
 # deque mit maxlen sorgt automatisch dafuer, dass beim Anhaengen eines neuen
 # Frames der AELTESTE Frame rausfaellt, sobald der Puffer voll ist -- der
-# Puffer enthaelt also IMMER die letzten SEQUENZ_LAENGE Frames, kontinuierlich
-# aktualisiert bei jedem einzelnen Kamera-Frame.
-frame_buffer = collections.deque(maxlen=SEQUENZ_LAENGE)
+# Puffer enthaelt also IMMER die letzten ROH_PUFFER_LAENGE echten Kamera-
+# Frames. Fuer die eigentliche Vorhersage wird daraus weiter unten nur jedes
+# SUBSAMPLE_SCHRITT-te Frame entnommen (siehe subsample_puffer()).
+frame_buffer = collections.deque(maxlen=ROH_PUFFER_LAENGE)
 letzte_aktion_zeit = 0.0
 frame_zaehler = 0
+letzte_gedruckte_geste = None  # fuer Konsolen-Ausgabe bei Geste-Wechsel
+
+
+def subsample_puffer(puffer, schritt, ziel_laenge):
+    """Nimmt aus dem Rohpuffer jedes 'schritt'-te Frame (0, schritt, 2*schritt, ...)
+    und gibt genau 'ziel_laenge' Frames zurueck -- das ist die Eingabegroesse,
+    die das trainierte Modell erwartet."""
+    liste = list(puffer)
+    subsampled = liste[::schritt]
+    return subsampled[:ziel_laenge]
 
 cap = cv2.VideoCapture(0)
 print("Live-Erkennung gestartet. Druecke 'q' zum Beenden.")
@@ -200,10 +247,14 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
         frame_zaehler += 1
 
-        # Sobald genug Frames vorhanden sind, wird alle VORHERSAGE_INTERVALL
-        # Frames neu vorhergesagt (echtes Sliding Window, kein Einmal-Schuss).
-        if len(frame_buffer) == SEQUENZ_LAENGE and frame_zaehler % VORHERSAGE_INTERVALL == 0:
-            eingabe = np.expand_dims(np.array(frame_buffer, dtype=np.float32), axis=0)
+        # Sobald der Rohpuffer voll ist (ROH_PUFFER_LAENGE echte Frames),
+        # wird alle VORHERSAGE_INTERVALL Frames neu vorhergesagt. Fuer die
+        # Vorhersage selbst wird nur jedes SUBSAMPLE_SCHRITT-te Frame genutzt
+        # (siehe subsample_puffer) -> ergibt genau SEQUENZ_LAENGE Frames,
+        # die aber den ZEITRAUM von ROH_PUFFER_LAENGE echten Frames abdecken.
+        if len(frame_buffer) == ROH_PUFFER_LAENGE and frame_zaehler % VORHERSAGE_INTERVALL == 0:
+            subsampled_frames = subsample_puffer(frame_buffer, SUBSAMPLE_SCHRITT, SEQUENZ_LAENGE)
+            eingabe = np.expand_dims(np.array(subsampled_frames, dtype=np.float32), axis=0)
             vorhersage = model.predict(eingabe, verbose=0)[0]
             klassen_idx = int(np.argmax(vorhersage))
             konfidenz = float(vorhersage[klassen_idx])
@@ -211,6 +262,12 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
             aktuelle_geste_text = f"{geste_name} ({konfidenz:.2f})"
             aktuelle_konfidenz = konfidenz
+
+            # Konsolen-Ausgabe nur bei Wechsel der erkannten Geste (nicht bei
+            # jedem einzelnen Frame), damit die Konsole nicht zuspammt.
+            if geste_name != letzte_gedruckte_geste:
+                print(f"Erkannt: {geste_name}  (Konfidenz: {konfidenz:.2f})")
+                letzte_gedruckte_geste = geste_name
 
             jetzt = time.time()
             if (konfidenz >= KONFIDENZ_SCHWELLE
@@ -222,7 +279,7 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 # nochmal (auf demselben Fenster) feuert.
 
         # --- Anzeige ---
-        cv2.putText(frame, f"Buffer: {len(frame_buffer)}/{SEQUENZ_LAENGE}", (10, 30),
+        cv2.putText(frame, f"Rohpuffer: {len(frame_buffer)}/{ROH_PUFFER_LAENGE}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
         if aktuelle_geste_text:
             farbe = (0, 255, 0) if aktuelle_konfidenz >= KONFIDENZ_SCHWELLE else (0, 165, 255)

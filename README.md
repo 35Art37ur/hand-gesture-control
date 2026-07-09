@@ -73,7 +73,7 @@ falls ihr später weitere, formabhängige Gesten ergänzt).
 Sobald alle 4 Ordner mit Daten gefüllt sind:
 
 ```bash
-python train_model.py
+python train_model_old.py
 ```
 
 Das Skript:
@@ -98,7 +98,7 @@ Das Skript:
 ## 3. Live-Erkennung + Aktionen — `live_inference.py`
 
 ```bash
-python live_inference.py
+python live_inference_old.py
 ```
 
 Funktionsweise:

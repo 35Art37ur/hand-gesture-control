@@ -1,38 +1,52 @@
 """
 train_model.py
 ---------------
-Laedt alle aufgenommenen .npy-Sequenzen aus 'trainingsdaten/<geste>/',
-baut daraus Trainings-/Validierungs-/Testdaten und trainiert ein LSTM,
-das die dynamischen Gesten klassifiziert.
+Trainiert und vergleicht MEHRERE unterschiedliche Modell-Architekturen auf
+denselben Trainingsdaten, damit man objektiv sehen kann, welche Architektur
+fuer diese Gesten am besten funktioniert.
 
-Jeder Aufruf dieses Skripts erzeugt ein NEUES, fortlaufend nummeriertes
-Modellverzeichnis, sodass fruehere Modelle nicht ueberschrieben werden:
+Jeder Aufruf erzeugt einen neuen, fortlaufend nummerierten "Vergleichs-Batch":
 
     modelle/
-        model_001/
-            gesture_model.h5
-            label_map.json
-            training_history.png
-            confusion_matrix.png
-            classification_report.txt
-        model_002/
+        vergleich_001/
+            gru_klein/
+                gesture_model.h5
+                label_map.json
+                training_history.png
+                confusion_matrix.png
+                classification_report.txt
+            lstm_mittel/
+                ... (gleiche Dateien)
+            cnn_gross/
+                ... (gleiche Dateien)
+            vergleich_zusammenfassung.csv   <- Tabelle aller Architekturen
+            vergleich_chart.png             <- Balkendiagramm Test-Accuracy
+            bestes_modell.txt                <- Name der besten Architektur
+                                                 (wird von live_inference*.py
+                                                 automatisch genutzt)
+        vergleich_002/
             ...
 
-Alle Laeufe landen ausserdem als eigene, klar benannte Runs im selben
-MLflow-Experiment ("gesture_recognition_lstm"), sodass sie in der
-MLflow-UI direkt nebeneinander verglichen werden koennen (Metriken,
-Hyperparameter, Confusion Matrix, Modell-Artefakt).
+METHODIK
+--------
+Datensplit: Ein einziger, stratifizierter 70/15/15 Train/Val/Test-Split wird
+EINMAL berechnet und dann fuer ALLE Architekturen wiederverwendet. Nur so ist
+der Vergleich fair -- Unterschiede in der Test-Accuracy koennen dann nur an
+der Architektur liegen, nicht an einem zufaellig guenstigeren/ungueenstigeren
+Split. Cross-Validation wuerde die Trainingszeit pro Architektur um den
+Faktor k vervielfachen; bei mehreren zu vergleichenden Architekturen und
+einem inzwischen mittelgrossen Datensatz (mehrere hundert Samples nach
+Spiegelung) ist ein fixer Split zusammen mit Early Stopping der bessere
+Kompromiss aus Aussagekraft und Trainingszeit.
 
-Erwartete Ordnerstruktur (von record_gesture.py erzeugt):
+Architekturen im Vergleich (bewusst unterschiedliche GROESSE und ART):
+  - gru_klein   (~20k Parameter):  rekurrent, wenig Parameter
+  - lstm_mittel (~47k Parameter):  rekurrent, bisherige Baseline-Architektur
+  - cnn_gross   (~155k Parameter): Convolution statt Rekurrenz
 
-    trainingsdaten/
-        wischen_rechts/          sample_0.npy, sample_1.npy, ...
-        wischen_links/           ...
-        kreis_uhrzeigersinn/     ...
-        kreis_gegen_uhrzeigersinn/ ...
-
-Jede .npy-Datei hat die Form (SEQUENZ_LAENGE, 66):
-    - 66 = 3 (absolute Wrist-Position) + 21*3 (relative Landmark-Position)
+MLflow-Organisation: Jeder Batch ist ein "Parent-Run", jede Architektur
+darin ein "Child-Run" (nested=True). So lassen sich in der MLflow-UI sowohl
+einzelne Architekturen vergleichen als auch ganze Batches gegeneinander.
 
 Aufruf:
     python train_model.py
@@ -42,6 +56,7 @@ Nach dem Training MLflow-UI oeffnen:
     -> http://localhost:5000
 """
 
+import argparse
 import json
 import os
 import re
@@ -55,25 +70,38 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from tensorflow.keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Masking
+from tensorflow.keras.layers import (
+    Conv1D,
+    Dense,
+    Dropout,
+    GlobalAveragePooling1D,
+    GRU,
+    Input,
+    LSTM,
+    Masking,
+)
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.utils import to_categorical
 
-DATEN_ORDNER = "trainingsdaten"
+parser = argparse.ArgumentParser(description="Trainiert und vergleicht mehrere Gesten-Modell-Architekturen.")
+parser.add_argument("--daten-ordner", type=str, default="trainingsdaten",
+                     help="Ordner mit den Trainingsdaten, z.B. trainingsdaten "
+                          "oder trainingsdaten_relativ (Standard: trainingsdaten)")
+args = parser.parse_args()
+
+DATEN_ORDNER = args.daten_ordner
 MODELLE_BASIS_ORDNER = "modelle"
 
 # --- MLflow Konfiguration ---
 # MLflow >= 3.x setzt den reinen Datei-Tracking-Modus ("./mlruns") in den
 # Maintenance Mode und verlangt standardmaessig ein Datenbank-Backend.
-# Wir nutzen daher eine lokale SQLite-Datei statt des reinen Dateiordners.
-MLFLOW_EXPERIMENT_NAME = "gesture_recognition_lstm"
+MLFLOW_EXPERIMENT_NAME = "gesture_recognition_vergleich"
 mlflow.set_tracking_uri("sqlite:///mlflow.db")
 mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
 
 class MlflowEpochLogger(Callback):
-    """Loggt nach jeder Epoche alle Metriken (loss/accuracy, train+val) an MLflow,
-    damit der Trainingsverlauf in der MLflow-UI als Graph erscheint."""
+    """Loggt nach jeder Epoche alle Metriken (loss/accuracy, train+val) an MLflow."""
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
@@ -82,26 +110,26 @@ class MlflowEpochLogger(Callback):
 
 
 # ---------------------------------------------------------------------------
-# 0. Naechste fortlaufende Modell-Nummer ermitteln
+# 0. Naechstes Vergleichs-Batch-Verzeichnis
 # ---------------------------------------------------------------------------
 
-def naechstes_modell_verzeichnis(basis_ordner):
-    """Findet die naechste freie, fortlaufende Nummer (model_001, model_002, ...)
-    und erstellt das zugehoerige Verzeichnis."""
+def naechstes_vergleich_verzeichnis(basis_ordner):
+    """Findet die naechste freie, fortlaufende Batch-Nummer (vergleich_001,
+    vergleich_002, ...) und erstellt das zugehoerige Verzeichnis."""
     os.makedirs(basis_ordner, exist_ok=True)
 
     vorhandene_nummern = []
     for name in os.listdir(basis_ordner):
         pfad = os.path.join(basis_ordner, name)
         if os.path.isdir(pfad):
-            match = re.fullmatch(r"model_(\d+)", name)
+            match = re.fullmatch(r"vergleich_(\d+)", name)
             if match:
                 vorhandene_nummern.append(int(match.group(1)))
 
     naechste_nummer = max(vorhandene_nummern, default=0) + 1
-    ordner_name = f"model_{naechste_nummer:03d}"
+    ordner_name = f"vergleich_{naechste_nummer:03d}"
     ziel_pfad = os.path.join(basis_ordner, ordner_name)
-    os.makedirs(ziel_pfad, exist_ok=False)  # soll nie existieren, sonst Bug in der Nummerierung
+    os.makedirs(ziel_pfad, exist_ok=False)
     return ziel_pfad, ordner_name, naechste_nummer
 
 
@@ -152,152 +180,171 @@ def lade_daten(daten_ordner):
 
 
 # ---------------------------------------------------------------------------
-# Modellverzeichnis fuer diesen Lauf anlegen
+# 2. Modell-Architekturen (drei unterschiedliche Typen UND Groessen)
 # ---------------------------------------------------------------------------
-ziel_ordner, ordner_name, modell_nummer = naechstes_modell_verzeichnis(MODELLE_BASIS_ORDNER)
-MODELL_DATEI = os.path.join(ziel_ordner, "gesture_model.h5")
-LABEL_MAP_DATEI = os.path.join(ziel_ordner, "label_map.json")
-TRAINING_HISTORY_DATEI = os.path.join(ziel_ordner, "training_history.png")
-CONFUSION_MATRIX_DATEI = os.path.join(ziel_ordner, "confusion_matrix.png")
-CLASSIFICATION_REPORT_DATEI = os.path.join(ziel_ordner, "classification_report.txt")
+# 1) GRU (klein):    Rekurrent wie LSTM, aber nur 3 statt 4 "Gates" pro Zelle
+#                     -> weniger Parameter, oft schneller trainiert, kann bei
+#                     kleineren Datensaetzen sogar besser generalisieren.
+# 2) LSTM (mittel):   Die bisher verwendete, bereits validierte Architektur
+#                     (~93% Testgenauigkeit in frueheren Laeufen) -- dient als
+#                     Referenzpunkt/Baseline fuer den Vergleich.
+# 3) 1D-CNN (gross):  Voellig andere Herangehensweise: lokale Bewegungsmuster
+#                     werden per Convolution statt sequenziellem Gedaechtnis
+#                     erkannt. Kein rekurrenter Zustand noetig -> vollstaendig
+#                     parallelisierbar, meist deutlich schneller trainiert,
+#                     und fuer kurze, fest laengige Bewegungssequenzen wie
+#                     unsere 20-Frame-Gesten oft ueberraschend konkurrenzfaehig.
+#
+# Bewusst NICHT gewaehlt:
+# - Bidirektionales LSTM: haette nur die bestehende LSTM-Idee vergroessert,
+#   ohne eine wirklich neue Modellfamilie ins Rennen zu bringen.
+# - Transformer/Attention: braucht erfahrungsgemaess deutlich mehr Trainings-
+#   daten als die paar hundert Samples pro Geste, die hier vorliegen --
+#   hohes Overfitting-Risiko und viel Tuning-Aufwand ohne klaren Mehrwert.
+# - Reines Dense/MLP (Flatten): ignoriert die Zeitstruktur der Bewegung
+#   komplett, waere v.a. als Sanity-Check interessant, nicht als ernsthafter
+#   Kandidat fuer die beste Loesung.
 
-print(f"Neues Modellverzeichnis: {ziel_ordner}\n")
+def baue_modell_gru(sequenz_laenge, feature_dim, anzahl_klassen):
+    modell = Sequential([
+        Input(shape=(sequenz_laenge, feature_dim)),
+        Masking(mask_value=0.0),
+        GRU(48, return_sequences=True, activation="tanh"),
+        Dropout(0.3),
+        GRU(24, return_sequences=False, activation="tanh"),
+        Dropout(0.3),
+        Dense(24, activation="relu"),
+        Dense(anzahl_klassen, activation="softmax"),
+    ], name="gru_klein")
 
-# Der MLflow-Run-Name entspricht dem Modellordner, damit man in der UI sofort
-# sieht, welcher Run zu welchem gespeicherten Modell auf der Festplatte gehoert.
-with mlflow.start_run(run_name=ordner_name):
+    hyperparameter = {
+        "architektur": "GRU",
+        "layer_1_units": 48,
+        "layer_2_units": 24,
+        "dense_units": 24,
+        "dropout_rate": 0.3,
+    }
+    return modell, hyperparameter
 
-    mlflow.set_tag("modell_ordner", ziel_ordner)
-    mlflow.log_param("modell_nummer", modell_nummer)
 
-    print("Lade Trainingsdaten...")
-    X, y, label_map = lade_daten(DATEN_ORDNER)
-    print(f"\nGesamt: {X.shape[0]} Samples, Sequenzlaenge {X.shape[1]}, Feature-Dim {X.shape[2]}")
-    print(f"Klassen: {label_map}")
+def baue_modell_lstm(sequenz_laenge, feature_dim, anzahl_klassen):
+    modell = Sequential([
+        Input(shape=(sequenz_laenge, feature_dim)),
+        Masking(mask_value=0.0),
+        LSTM(64, return_sequences=True, activation="tanh"),
+        Dropout(0.3),
+        LSTM(32, return_sequences=False, activation="tanh"),
+        Dropout(0.3),
+        Dense(32, activation="relu"),
+        Dense(anzahl_klassen, activation="softmax"),
+    ], name="lstm_mittel")
+
+    hyperparameter = {
+        "architektur": "LSTM",
+        "layer_1_units": 64,
+        "layer_2_units": 32,
+        "dense_units": 32,
+        "dropout_rate": 0.3,
+    }
+    return modell, hyperparameter
+
+
+def baue_modell_cnn(sequenz_laenge, feature_dim, anzahl_klassen):
+    # Hinweis: Conv1D unterstuetzt kein Keras-Masking, ist hier aber auch
+    # nicht noetig, da alle aufgenommenen Sequenzen bereits exakt gleich
+    # lang sind (kein Zero-Padding im Datensatz vorhanden).
+    modell = Sequential([
+        Input(shape=(sequenz_laenge, feature_dim)),
+        Conv1D(filters=128, kernel_size=3, padding="same", activation="relu"),
+        Conv1D(filters=256, kernel_size=3, padding="same", activation="relu"),
+        GlobalAveragePooling1D(),
+        Dropout(0.4),
+        Dense(128, activation="relu"),
+        Dense(anzahl_klassen, activation="softmax"),
+    ], name="cnn_gross")
+
+    hyperparameter = {
+        "architektur": "1D-CNN",
+        "conv1_filters": 128,
+        "conv2_filters": 256,
+        "kernel_size": 3,
+        "dense_units": 128,
+        "dropout_rate": 0.4,
+    }
+    return modell, hyperparameter
+
+
+# Registry: neue Architekturen koennen hier einfach ergaenzt werden.
+MODELL_VARIANTEN = {
+    "gru_klein": baue_modell_gru,
+    "lstm_mittel": baue_modell_lstm,
+    "cnn_gross": baue_modell_cnn,
+}
+
+
+# ---------------------------------------------------------------------------
+# 3. Eine einzelne Architektur trainieren + evaluieren
+# ---------------------------------------------------------------------------
+
+def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
+                             X_val, y_val, X_test, y_test, label_map, sub_ordner):
+    os.makedirs(sub_ordner, exist_ok=True)
+    modell_datei = os.path.join(sub_ordner, "gesture_model.h5")
+    label_map_datei = os.path.join(sub_ordner, "label_map.json")
+    history_datei = os.path.join(sub_ordner, "training_history.png")
+    cm_datei = os.path.join(sub_ordner, "confusion_matrix.png")
+    report_datei = os.path.join(sub_ordner, "classification_report.txt")
 
     anzahl_klassen = len(label_map)
-    y_kategorisch = to_categorical(y, num_classes=anzahl_klassen)
+    sequenz_laenge = X_train.shape[1]
+    feature_dim = X_train.shape[2]
 
-    # Basisinfos zum Datensatz loggen
-    mlflow.log_param("anzahl_samples_gesamt", X.shape[0])
-    mlflow.log_param("sequenz_laenge", X.shape[1])
-    mlflow.log_param("feature_dim", X.shape[2])
-    mlflow.log_param("anzahl_klassen", anzahl_klassen)
-    mlflow.log_param("klassen", list(label_map.values()))
+    print(f"\n{'=' * 70}\nTrainiere Architektur: {architektur_name}\n{'=' * 70}")
 
-    # -----------------------------------------------------------------------
-    # 2. Train / Val / Test Split
-    # -----------------------------------------------------------------------
-    # Erst Test abtrennen, dann von Rest nochmal Validation abtrennen.
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y_kategorisch, test_size=0.15, random_state=42, stratify=y
-    )
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train, y_train, test_size=0.15, random_state=42,
-        stratify=np.argmax(y_train, axis=1)
-    )
+    modell, hyperparameter = builder_fn(sequenz_laenge, feature_dim, anzahl_klassen)
+    modell.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    modell.summary()
 
-    print(f"\nTrain: {X_train.shape[0]}  Val: {X_val.shape[0]}  Test: {X_test.shape[0]}")
-    mlflow.log_param("anzahl_train_samples", X_train.shape[0])
-    mlflow.log_param("anzahl_val_samples", X_val.shape[0])
-    mlflow.log_param("anzahl_test_samples", X_test.shape[0])
+    anzahl_parameter = modell.count_params()
+    mlflow.set_tag("architektur", architektur_name)
+    mlflow.log_params(hyperparameter)
+    mlflow.log_param("anzahl_modell_parameter", anzahl_parameter)
 
-    # -----------------------------------------------------------------------
-    # 3. Modell definieren
-    # -----------------------------------------------------------------------
-    sequenz_laenge = X.shape[1]
-    feature_dim = X.shape[2]
-
-    lstm_units_1 = 64
-    lstm_units_2 = 32
-    dense_units = 32
-    dropout_rate = 0.3
-    epochs = 150
-    batch_size = 16
-
-    model = Sequential([
-        Masking(mask_value=0.0, input_shape=(sequenz_laenge, feature_dim)),
-        LSTM(lstm_units_1, return_sequences=True, activation="tanh"),
-        Dropout(dropout_rate),
-        LSTM(lstm_units_2, return_sequences=False, activation="tanh"),
-        Dropout(dropout_rate),
-        Dense(dense_units, activation="relu"),
-        Dense(anzahl_klassen, activation="softmax"),
-    ])
-
-    model.compile(
-        optimizer="adam",
-        loss="categorical_crossentropy",
-        metrics=["accuracy"],
-    )
-
-    model.summary()
-
-    # Hyperparameter loggen
-    mlflow.log_params({
-        "lstm_units_1": lstm_units_1,
-        "lstm_units_2": lstm_units_2,
-        "dense_units": dense_units,
-        "dropout_rate": dropout_rate,
-        "epochs_max": epochs,
-        "batch_size": batch_size,
-        "optimizer": "adam",
-    })
-
-    # -----------------------------------------------------------------------
-    # 4. Training
-    # -----------------------------------------------------------------------
     callbacks = [
         EarlyStopping(monitor="val_loss", patience=15, restore_best_weights=True),
-        ModelCheckpoint(MODELL_DATEI, monitor="val_accuracy", save_best_only=True),
-        MlflowEpochLogger(),  # loggt jede Epoche einzeln -> Graphen in der MLflow-UI
+        ModelCheckpoint(modell_datei, monitor="val_accuracy", save_best_only=True),
+        MlflowEpochLogger(),
     ]
 
-    history = model.fit(
+    history = modell.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
-        epochs=epochs,
-        batch_size=batch_size,
+        epochs=150,
+        batch_size=16,
         callbacks=callbacks,
         verbose=2,
     )
-
     mlflow.log_param("tatsaechliche_epochen", len(history.history["loss"]))
 
-    # -----------------------------------------------------------------------
-    # 5. Evaluation auf Testdaten
-    # -----------------------------------------------------------------------
-    print("\n--- Evaluation auf Testdaten ---")
-    test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-    print(f"Test-Accuracy: {test_acc:.3f}  Test-Loss: {test_loss:.3f}")
-
+    test_loss, test_acc = modell.evaluate(X_test, y_test, verbose=0)
+    print(f"[{architektur_name}] Test-Accuracy: {test_acc:.3f}  "
+          f"Test-Loss: {test_loss:.3f}  Parameter: {anzahl_parameter}")
     mlflow.log_metric("test_accuracy", test_acc)
     mlflow.log_metric("test_loss", test_loss)
 
-    y_pred = np.argmax(model.predict(X_test), axis=1)
+    y_pred = np.argmax(modell.predict(X_test, verbose=0), axis=1)
     y_true = np.argmax(y_test, axis=1)
     zielnamen = [label_map[i] for i in range(anzahl_klassen)]
     alle_label_indices = list(range(anzahl_klassen))
 
-    # labels=alle_label_indices sorgt dafuer, dass auch Klassen beruecksichtigt
-    # werden, die im (kleinen) Test-Split zufaellig nicht vorkommen.
     report_text = classification_report(
         y_true, y_pred, labels=alle_label_indices, target_names=zielnamen, zero_division=0
     )
-    print("\nClassification Report:")
-    print(report_text)
+    with open(report_datei, "w") as f:
+        f.write(report_text)
+    mlflow.log_artifact(report_datei)
 
     cm = confusion_matrix(y_true, y_pred, labels=alle_label_indices)
-    print("Confusion Matrix (Zeilen=wahr, Spalten=vorhergesagt):")
-    print(zielnamen)
-    print(cm)
-
-    # Classification Report als Text-Artefakt loggen
-    with open(CLASSIFICATION_REPORT_DATEI, "w") as f:
-        f.write(report_text)
-    mlflow.log_artifact(CLASSIFICATION_REPORT_DATEI)
-
-    # Confusion Matrix als Grafik loggen
     fig_cm, ax_cm = plt.subplots(figsize=(6, 5))
     im = ax_cm.imshow(cm, cmap="Blues")
     ax_cm.set_xticks(range(len(zielnamen)))
@@ -306,52 +353,148 @@ with mlflow.start_run(run_name=ordner_name):
     ax_cm.set_yticklabels(zielnamen)
     ax_cm.set_xlabel("Vorhergesagt")
     ax_cm.set_ylabel("Wahr")
-    ax_cm.set_title(f"Confusion Matrix ({ordner_name})")
+    ax_cm.set_title(f"Confusion Matrix ({architektur_name})")
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
             ax_cm.text(j, i, str(cm[i, j]), ha="center", va="center",
                        color="white" if cm[i, j] > cm.max() / 2 else "black")
     fig_cm.colorbar(im, ax=ax_cm)
     plt.tight_layout()
-    plt.savefig(CONFUSION_MATRIX_DATEI)
-    mlflow.log_artifact(CONFUSION_MATRIX_DATEI)
+    plt.savefig(cm_datei)
+    mlflow.log_artifact(cm_datei)
     plt.close(fig_cm)
 
-    # -----------------------------------------------------------------------
-    # 6. Speichern: Modell + Label-Map + Trainingsverlauf
-    # -----------------------------------------------------------------------
-    model.save(MODELL_DATEI)
-    with open(LABEL_MAP_DATEI, "w") as f:
+    modell.save(modell_datei)
+    with open(label_map_datei, "w") as f:
         json.dump(label_map, f, indent=2)
-
-    mlflow.log_artifact(LABEL_MAP_DATEI)
-    # Modell zusaetzlich als MLflow-Modell loggen -> Versionierung/Vergleich in der UI
-    mlflow.keras.log_model(model, artifact_path="model")
+    mlflow.log_artifact(label_map_datei)
+    mlflow.keras.log_model(modell, artifact_path="model")
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
     axes[0].plot(history.history["accuracy"], label="train")
     axes[0].plot(history.history["val_accuracy"], label="val")
-    axes[0].set_title(f"Accuracy ({ordner_name})")
+    axes[0].set_title(f"Accuracy ({architektur_name})")
     axes[0].set_xlabel("Epoche")
     axes[0].legend()
 
     axes[1].plot(history.history["loss"], label="train")
     axes[1].plot(history.history["val_loss"], label="val")
-    axes[1].set_title(f"Loss ({ordner_name})")
+    axes[1].set_title(f"Loss ({architektur_name})")
     axes[1].set_xlabel("Epoche")
     axes[1].legend()
 
     plt.tight_layout()
-    plt.savefig(TRAINING_HISTORY_DATEI)
-    mlflow.log_artifact(TRAINING_HISTORY_DATEI)
+    plt.savefig(history_datei)
+    mlflow.log_artifact(history_datei)
     plt.close(fig)
 
-    print(f"\nFertig! Modell gespeichert unter: {ziel_ordner}")
-    print(f"  - {MODELL_DATEI}")
-    print(f"  - {LABEL_MAP_DATEI}")
-    print(f"  - {TRAINING_HISTORY_DATEI}")
-    print(f"  - {CONFUSION_MATRIX_DATEI}")
-    print(f"  - {CLASSIFICATION_REPORT_DATEI}")
-    print(f"\nMLflow-Run-Name: '{ordner_name}' (im Experiment '{MLFLOW_EXPERIMENT_NAME}')")
-    print("Starte 'mlflow ui --backend-store-uri sqlite:///mlflow.db' und oeffne")
-    print("http://localhost:5000, um alle bisherigen Laeufe nebeneinander zu vergleichen.")
+    return {
+        "architektur": architektur_name,
+        "anzahl_parameter": anzahl_parameter,
+        "test_accuracy": test_acc,
+        "test_loss": test_loss,
+        "epochen": len(history.history["loss"]),
+        "ordner": sub_ordner,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Hauptablauf
+# ---------------------------------------------------------------------------
+batch_ordner, batch_name, batch_nummer = naechstes_vergleich_verzeichnis(MODELLE_BASIS_ORDNER)
+print(f"Neuer Vergleichs-Batch: {batch_ordner}\n")
+
+print("Lade Trainingsdaten...")
+X, y, label_map = lade_daten(DATEN_ORDNER)
+anzahl_klassen = len(label_map)
+print(f"\nGesamt: {X.shape[0]} Samples, Sequenzlaenge {X.shape[1]}, Feature-Dim {X.shape[2]}")
+print(f"Klassen: {label_map}")
+
+y_kategorisch = to_categorical(y, num_classes=anzahl_klassen)
+
+# Ein einziger, stratifizierter Split fuer ALLE Architekturen (siehe Docstring
+# oben fuer die Begruendung, warum 70/15/15 statt Cross-Validation).
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y_kategorisch, test_size=0.15, random_state=42, stratify=y
+)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train, y_train, test_size=0.15, random_state=42,
+    stratify=np.argmax(y_train, axis=1)
+)
+print(f"Train: {X_train.shape[0]}  Val: {X_val.shape[0]}  Test: {X_test.shape[0]}")
+
+ergebnisse = []
+
+with mlflow.start_run(run_name=batch_name):
+    mlflow.set_tag("batch_ordner", batch_ordner)
+    mlflow.log_param("anzahl_samples_gesamt", X.shape[0])
+    mlflow.log_param("anzahl_klassen", anzahl_klassen)
+    mlflow.log_param("klassen", list(label_map.values()))
+    mlflow.log_param("anzahl_train_samples", X_train.shape[0])
+    mlflow.log_param("anzahl_val_samples", X_val.shape[0])
+    mlflow.log_param("anzahl_test_samples", X_test.shape[0])
+    mlflow.log_param("architekturen_im_vergleich", list(MODELL_VARIANTEN.keys()))
+
+    for architektur_name, builder_fn in MODELL_VARIANTEN.items():
+        sub_ordner = os.path.join(batch_ordner, architektur_name)
+        with mlflow.start_run(run_name=f"{batch_name}_{architektur_name}", nested=True):
+            ergebnis = trainiere_und_evaluiere(
+                architektur_name, builder_fn,
+                X_train, y_train, X_val, y_val, X_test, y_test,
+                label_map, sub_ordner
+            )
+            ergebnisse.append(ergebnis)
+
+    # --- Vergleichs-Zusammenfassung ueber alle Architekturen ---
+    ergebnisse_sortiert = sorted(ergebnisse, key=lambda r: r["test_accuracy"], reverse=True)
+    bestes = ergebnisse_sortiert[0]
+
+    zusammenfassung_zeilen = ["architektur,anzahl_parameter,test_accuracy,test_loss,epochen"]
+    for r in ergebnisse_sortiert:
+        zusammenfassung_zeilen.append(
+            f"{r['architektur']},{r['anzahl_parameter']},"
+            f"{r['test_accuracy']:.4f},{r['test_loss']:.4f},{r['epochen']}"
+        )
+    zusammenfassung_csv = os.path.join(batch_ordner, "vergleich_zusammenfassung.csv")
+    with open(zusammenfassung_csv, "w") as f:
+        f.write("\n".join(zusammenfassung_zeilen))
+    mlflow.log_artifact(zusammenfassung_csv)
+
+    # Balkendiagramm: Test-Accuracy je Architektur (bestes Modell hervorgehoben)
+    fig_vgl, ax_vgl = plt.subplots(figsize=(7, 4))
+    namen = [r["architektur"] for r in ergebnisse_sortiert]
+    werte = [r["test_accuracy"] for r in ergebnisse_sortiert]
+    farben = ["#2ca02c" if r is bestes else "#1f77b4" for r in ergebnisse_sortiert]
+    balken = ax_vgl.bar(namen, werte, color=farben)
+    ax_vgl.set_ylabel("Test-Accuracy")
+    ax_vgl.set_ylim(0, 1.05)
+    ax_vgl.set_title(f"Architektur-Vergleich ({batch_name})")
+    for balken_einzeln, wert in zip(balken, werte):
+        ax_vgl.text(balken_einzeln.get_x() + balken_einzeln.get_width() / 2, wert + 0.02,
+                    f"{wert:.2f}", ha="center")
+    plt.tight_layout()
+    vergleich_chart_datei = os.path.join(batch_ordner, "vergleich_chart.png")
+    plt.savefig(vergleich_chart_datei)
+    mlflow.log_artifact(vergleich_chart_datei)
+    plt.close(fig_vgl)
+
+    mlflow.log_metric("bestes_modell_test_accuracy", bestes["test_accuracy"])
+    mlflow.set_tag("bestes_modell", bestes["architektur"])
+
+    # Marker-Datei: live_inference*.py liest das automatisch aus, um ohne
+    # weitere Angabe das beste Modell dieses Batches zu verwenden.
+    with open(os.path.join(batch_ordner, "bestes_modell.txt"), "w") as f:
+        f.write(bestes["architektur"])
+
+    print(f"\n{'=' * 70}")
+    print("ZUSAMMENFASSUNG")
+    print(f"{'=' * 70}")
+    for r in ergebnisse_sortiert:
+        markierung = "  <-- BESTES MODELL" if r is bestes else ""
+        print(f"{r['architektur']:15s}  Test-Acc: {r['test_accuracy']:.3f}  "
+              f"Parameter: {r['anzahl_parameter']:>7}  Epochen: {r['epochen']:>3}{markierung}")
+    print(f"\nAlle Modelle gespeichert unter: {batch_ordner}")
+    print(f"Empfohlenes Modell fuer live_inference*.py: {bestes['architektur']}")
+    print("\nStarte 'mlflow ui --backend-store-uri sqlite:///mlflow.db' und oeffne")
+    print("http://localhost:5000, um alle Architekturen dieses und frueherer")
+    print("Batches im Detail zu vergleichen (Parent-Run = Batch, Child-Runs = Architekturen).")
