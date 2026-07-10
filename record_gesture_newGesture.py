@@ -2,7 +2,7 @@
 record_gesture_newGesture.py
 ------------------------------
 Wie record_gesture_relativ.py, aber mit einem zusaetzlichen 67. Feature-Wert
-pro Frame fuer die neue Pinch/Zoom-Geste. Gedacht fuer die 4 neuen
+pro Frame fuer die neue Pinch/Zoom-Geste. Gedacht fuer die neuen
 Gesten-Klassen:
 
     wischen_oben, wischen_unten        (vertikales Wischen, wie das
@@ -10,9 +10,11 @@ Gesten-Klassen:
                                          nur um 90 Grad gedreht)
     pinch_auf, pinch_zu                (Finger auseinander = reinzoomen,
                                          Finger zusammen = rauszoomen)
-    faust                              (Ruhe-/Pause-Geste: geballte Faust
-                                         halten -> live_inference_newGesture.py
-                                         fuehrt dabei bewusst KEINE Aktion aus)
+
+Hinweis: Eine gesonderte 'Faust'-Ruhegeste ist nicht mehr noetig -- Ruhe-
+pausen werden in live_inference_newGesture.py stattdessen ueber den
+Aktivierungs-Check "Hand ueber Handgelenk" abgedeckt (Hand haengen lassen
+statt Faust ballen).
 
 NEUES FEATURE (Spalte 66, zusaetzlich zu den bisherigen 66 Werten):
 Abstand zwischen Daumenspitze (Landmark 4) und Zeigefingerspitze
@@ -51,13 +53,13 @@ SEQUENZ_LAENGE = 20
 
 parser = argparse.ArgumentParser(description="Nimmt Trainingsdaten fuer neue Gesten auf (vertikales Wischen, Pinch/Zoom).")
 parser.add_argument("--geste", type=str, required=True,
-                     help="Name der Geste, z.B. wischen_oben, wischen_unten, pinch_auf, pinch_zu")
+                    help="Name der Geste, z.B. wischen_oben, wischen_unten, pinch_auf, pinch_zu")
 parser.add_argument("--samples", type=int, default=100,
-                     help="Anzahl der aufzunehmenden Sequenzen (Standard: 100)")
+                    help="Anzahl der aufzunehmenden Sequenzen (Standard: 100)")
 parser.add_argument("--seq-laenge", type=int, default=SEQUENZ_LAENGE,
-                     help=f"Anzahl Frames pro Sequenz (Standard: {SEQUENZ_LAENGE})")
+                    help=f"Anzahl Frames pro Sequenz (Standard: {SEQUENZ_LAENGE})")
 parser.add_argument("--ausgabe-ordner", type=str, default="trainingsdaten_newGesture",
-                     help="Zielordner fuer die Aufnahmen (Standard: trainingsdaten_newGesture)")
+                    help="Zielordner fuer die Aufnahmen (Standard: trainingsdaten_newGesture)")
 args = parser.parse_args()
 
 GESTE_NAME = args.geste

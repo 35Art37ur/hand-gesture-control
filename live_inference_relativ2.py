@@ -1,36 +1,35 @@
 """
-live_inference_newGesture.py
--------------------------------
-Wie live_inference_relativ.py (Rohpuffer + Subsampling + Positions-/
-Groessennormalisierung), zusaetzlich mit dem 67. Feature (Pinch-Distanz)
-fuer die neuen Gesten wischen_oben, wischen_unten, pinch_auf, pinch_zu.
+live_inference_relativ2.py
+-----------------------------
+Wie live_inference_relativ.py (Positions-/Groessennormalisierung, KEIN
+Pinch-Feature, funktioniert mit Modellen aus trainingsdaten_relativ/ --
+also den urspruenglichen 4 Gesten: wischen_rechts, wischen_links,
+kreis_uhrzeigersinn, kreis_gegen_uhrzeigersinn).
 
-Ruhepausen werden ueber den Aktivierungs-Check "Hand ueber Handgelenk"
-abgedeckt (siehe Punkt 1 unten) -- eine gesonderte Faust-Erkennung ist
-nicht mehr noetig und wurde daher entfernt.
-
-Zwei Schutzmechanismen gegen Fehlerkennungen:
+NEU gegenueber live_inference_relativ.py -- zwei Verbesserungen aus
+live_inference_newGesture.py, aber OHNE die neuen Gesten/das Pinch-Feature:
 
 1. Aktivierungs-Check "Hand ueber Handgelenk": Es wird nur erkannt, wenn
-   die Fingerspitzen im Bild ueber (kleineres y als) dem Handgelenk liegen
-   -- also die typische "ich fuehre gerade eine Geste aus"-Haltung. Laesst
-   man die Hand einfach haengen, wird NICHTS ausgewertet. Kein Training
-   noetig, reine Geometrie-Regel auf den Rohdaten.
+   die Fingerspitzen im Bild ueber (kleineres y als) dem Handgelenk liegen.
+   Haengt die Hand einfach herunter, wird NICHTS ausgewertet. Reine
+   Geometrie-Regel, kein Training noetig.
 
-2. Frame-Schema mit "Anlauf-Puffer": Es werden 44 rohe Kamera-Frames
-   gesammelt. Die ERSTEN 4 davon werden verworfen (Anlaufphase, z.B.
-   Restbewegung von der vorherigen Geste), von den verbleibenden 40 wird
-   jedes zweite Frame genutzt -> exakt die 20 Frames, die das Modell
-   erwartet.
+2. Frame-Schema mit "Anlauf-Puffer": 44 rohe Kamera-Frames werden
+   gesammelt, die ERSTEN 4 davon verworfen (Anlaufphase), von den
+   verbleibenden 40 wird jedes zweite Frame genutzt -> exakt die 20
+   Frames, die das Modell erwartet.
 
-Voraussetzung: train_model.py wurde mit Daten aus trainingsdaten_newGesture/
-ausgefuehrt (67 Feature-Werte pro Frame statt 66).
+3. Cooldown auf 2 Sekunden erhoeht, damit genug Zeit bleibt, die Haende
+   nach einer erkannten Geste wieder in Ruhe zu senken.
+
+Voraussetzung: train_model.py wurde mit Daten aus trainingsdaten_relativ/
+ausgefuehrt (66 Feature-Werte pro Frame, KEIN Pinch-Feature).
 
 Aufruf (nutzt automatisch das empfohlene Modell des neuesten Batches):
-    python live_inference_newGesture.py
+    python live_inference_relativ2.py
 
 Aufruf mit einer bestimmten Architektur / einem bestimmten Batch:
-    python live_inference_newGesture.py --model modelle/vergleich_005/cnn_gross
+    python live_inference_relativ2.py --model modelle/vergleich_003/cnn_gross
 
 Steuerung:
     'q' = Beenden
@@ -58,8 +57,7 @@ SUBSAMPLE_SCHRITT = 2         # Von den verbleibenden Frames wird jedes 2. genut
 # 44 roh -> 4 verwerfen -> 40 uebrig -> jedes 2. -> 20 (SEQUENZ_LAENGE)
 ROH_PUFFER_LAENGE = VERWERFE_ERSTE_FRAMES + SEQUENZ_LAENGE * SUBSAMPLE_SCHRITT
 KONFIDENZ_SCHWELLE = 0.85
-COOLDOWN_SEKUNDEN = 2.0       # 2s Pause nach einer erkannten Geste, damit Zeit
-# bleibt, die Haende in Ruhe wieder zu senken
+COOLDOWN_SEKUNDEN = 2.0       # 2s Pause nach einer erkannten Geste
 VORHERSAGE_INTERVALL = 1
 
 
@@ -98,10 +96,10 @@ def ermittele_modell_ordner(explizit_angegeben, basis_ordner):
     return os.path.join(batch_ordner, unterordner[0])
 
 
-parser = argparse.ArgumentParser(description="Live-Erkennung inkl. vertikalem Wischen und Pinch/Zoom.")
+parser = argparse.ArgumentParser(description="Live-Erkennung (positions-/groessenunabhaengig, mit Ruheposition + Anlauf-Puffer).")
 parser.add_argument("--model", type=str, default=None,
                     help="Pfad zu einem bestimmten Architektur-Ordner, z.B. "
-                         "modelle/vergleich_005/cnn_gross. Ohne Angabe wird "
+                         "modelle/vergleich_003/cnn_gross. Ohne Angabe wird "
                          "automatisch das empfohlene Modell des neuesten "
                          "Vergleichs-Batches genutzt.")
 args = parser.parse_args()
@@ -131,24 +129,12 @@ def fuehre_aktion_aus(geste_name):
     elif geste_name == "wischen_links":
         print(">>> Aktion: Zurueck (links)")
         pyautogui.press("left")
-    elif geste_name == "wischen_oben":
-        print(">>> Aktion: Pfeil hoch")
-        pyautogui.press("up")
-    elif geste_name == "wischen_unten":
-        print(">>> Aktion: Pfeil runter")
-        pyautogui.press("down")
     elif geste_name == "kreis_uhrzeigersinn":
         print(">>> Aktion: Scroll runter")
         pyautogui.scroll(-300)
     elif geste_name == "kreis_gegen_uhrzeigersinn":
         print(">>> Aktion: Scroll hoch")
         pyautogui.scroll(300)
-    elif geste_name == "pinch_auf":
-        print(">>> Aktion: Zoom rein")
-        pyautogui.hotkey("ctrl", "+")
-    elif geste_name == "pinch_zu":
-        print(">>> Aktion: Zoom raus")
-        pyautogui.hotkey("ctrl", "-")
     else:
         print(f">>> Unbekannte Geste: {geste_name} (keine Aktion definiert)")
 
@@ -178,9 +164,9 @@ def draw_landmarks_on_image(image, detection_result):
     return image
 
 
-def extrahiere_rohdaten_erweitert(hand_landmarks):
-    """IDENTISCH zu record_gesture_newGesture.py: 66 Basis-Werte + 1
-    Pinch-Feature (Spalte 66)."""
+def extrahiere_rohdaten(hand_landmarks):
+    """IDENTISCH zu record_gesture_relativ.py: absolute Wrist-Position (wird
+    spaeter normalisiert) + relative Landmarks. KEIN Pinch-Feature -> 66 Werte."""
     wrist = hand_landmarks[0]
     wrist_x, wrist_y, wrist_z = wrist.x, wrist.y, wrist.z
 
@@ -191,26 +177,11 @@ def extrahiere_rohdaten_erweitert(hand_landmarks):
         rel_z = lm.z - wrist_z
         frame_koordinaten.extend([rel_x, rel_y, rel_z])
 
-    daumen = hand_landmarks[4]
-    zeigefinger = hand_landmarks[8]
-    mittelfinger_mcp = hand_landmarks[9]
-
-    rel_daumen = np.array([daumen.x - wrist_x, daumen.y - wrist_y, daumen.z - wrist_z])
-    rel_zeige = np.array([zeigefinger.x - wrist_x, zeigefinger.y - wrist_y, zeigefinger.z - wrist_z])
-    rel_mittel_mcp = np.array([mittelfinger_mcp.x - wrist_x, mittelfinger_mcp.y - wrist_y, mittelfinger_mcp.z - wrist_z])
-
-    pinch_distanz = float(np.linalg.norm(rel_daumen - rel_zeige))
-    hand_groesse_referenz = max(float(np.linalg.norm(rel_mittel_mcp)), 1e-6)
-    pinch_feature = pinch_distanz / hand_groesse_referenz
-
-    frame_koordinaten.append(pinch_feature)
     return frame_koordinaten
 
 
 def normalisiere_sequenz(sequenz):
-    """MUSS identisch zu record_gesture_newGesture.py sein. Betrifft nur
-    Spalte 0:3 (Wrist-Trajektorie); Handform (3:66) und Pinch-Feature (66)
-    bleiben unveraendert."""
+    """MUSS identisch zu record_gesture_relativ.py sein."""
     sequenz = np.array(sequenz, dtype=np.float32).copy()
     wrist_start = sequenz[0, 0:3].copy()
     delta = sequenz[:, 0:3] - wrist_start
@@ -232,17 +203,17 @@ def subsample_puffer(puffer, verwerfe_erste, schritt, ziel_laenge):
 def ist_hand_aktiv(hand_landmarks):
     """Prueft, ob die Hand oberhalb des Handgelenks gehalten wird (typische
     'ich fuehre gerade eine Geste aus'-Haltung) statt einfach herunter-
-    zuhaengen. Im Bildkoordinatensystem ist y=0 oben, y=1 unten -- die Hand
-    gilt als aktiv, wenn die Fingerspitzen im Schnitt oberhalb (kleineres y)
-    des Handgelenks liegen. Reine Geometrie-Regel, kein Training noetig."""
+    zuhaengen. y=0 ist oben im Bild, y=1 unten -- die Hand gilt als aktiv,
+    wenn die Fingerspitzen im Schnitt oberhalb (kleineres y) des
+    Handgelenks liegen. Reine Geometrie-Regel, kein Training noetig."""
     wrist = hand_landmarks[0]
-    fingerspitzen_indices = [4, 8, 12, 16, 20]  # Daumen, Zeige-, Mittel-, Ring-, kleiner Finger
+    fingerspitzen_indices = [4, 8, 12, 16, 20]
     durchschnitt_y = sum(hand_landmarks[i].y for i in fingerspitzen_indices) / len(fingerspitzen_indices)
     return durchschnitt_y < wrist.y
 
 
 # ---------------------------------------------------------------------------
-# 4. Sliding Window Rohpuffer + Normalisierung bei jeder Vorhersage
+# 4. Sliding Window Rohpuffer + Normalisierung + Aktivierungs-Check
 # ---------------------------------------------------------------------------
 frame_buffer = collections.deque(maxlen=ROH_PUFFER_LAENGE)
 letzte_aktion_zeit = 0.0
@@ -250,7 +221,7 @@ frame_zaehler = 0
 letzte_gedruckte_geste = None
 
 cap = cv2.VideoCapture(0)
-print("Live-Erkennung gestartet (inkl. vertikalem Wischen + Pinch/Zoom). Druecke 'q' zum Beenden.")
+print("Live-Erkennung gestartet (relativ, mit Ruheposition + Anlauf-Puffer). Druecke 'q' zum Beenden.")
 
 with HandLandmarker.create_from_options(options) as landmarker:
     while True:
@@ -269,11 +240,9 @@ with HandLandmarker.create_from_options(options) as landmarker:
         if result.hand_landmarks:
             hand_landmarks = result.hand_landmarks[0]
             if ist_hand_aktiv(hand_landmarks):
-                frame_koordinaten = extrahiere_rohdaten_erweitert(hand_landmarks)
+                frame_koordinaten = extrahiere_rohdaten(hand_landmarks)
                 frame_buffer.append(frame_koordinaten)
             else:
-                # Hand ist im Bild, haengt aber unterhalb des Handgelenks
-                # (Ruheposition) -> keine Erkennung, Puffer verwerfen.
                 hand_in_ruheposition = True
                 frame_buffer.clear()
             frame = draw_landmarks_on_image(frame, result)
@@ -316,7 +285,7 @@ with HandLandmarker.create_from_options(options) as landmarker:
         cv2.putText(frame, "Druecke 'q' zum Beenden", (10, 460),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-        cv2.imshow("Live Gesture Recognition (neue Gesten)", frame)
+        cv2.imshow("Live Gesture Recognition (relativ, v2)", frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
