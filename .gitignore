@@ -13,8 +13,6 @@ env/
 hand_landmarker.task
 
 # Trainingsdaten (meist zu groß fürs Repo + ggf. personenbezogen)
-trainingsdaten/
-mirrored_data/
 
 # Trainiertes Modell (optional: auskommentieren, falls du es versionieren willst)
 gesture_model.h5
@@ -25,6 +23,7 @@ classification_report.txt
 
 # MLflow Tracking-Daten (enthaelt Modell-Kopien pro Run, wird schnell gross)
 mlruns/
+mlflow.db
 
 # IDE
 .idea/

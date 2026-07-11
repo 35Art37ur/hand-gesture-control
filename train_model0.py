@@ -55,7 +55,7 @@ Nach dem Training MLflow-UI oeffnen:
     mlflow ui --backend-store-uri sqlite:///mlflow.db
     -> http://localhost:5000
 """
-
+import argparse
 import json
 import os
 import re
@@ -81,8 +81,17 @@ from tensorflow.keras.layers import (
 )
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.utils import to_categorical
+from augmentation_generator import AugmentedSequence
 
+parser = argparse.ArgumentParser(description="Trainiert und vergleicht mehrere Gesten-Modell-Architekturen.")
+parser.add_argument(
+    "--no-augmentation",
+    action="store_true",
+    help="Deaktiviert die Datenaugmentation"
+)
+args = parser.parse_args()
 DATEN_ORDNER = "trainingsdaten"
+AUGMENTIERUNG_AKTIV = not args.no_augmentation
 MODELLE_BASIS_ORDNER = "modelle"
 
 # --- MLflow Konfiguration ---
@@ -309,14 +318,31 @@ def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
         MlflowEpochLogger(),
     ]
 
-    history = modell.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
-        epochs=150,
+
+    train_generator = AugmentedSequence(
+    X_train,
+    y_train,
+    batch_size=16,
+    augment=AUGMENTIERUNG_AKTIV
+    )
+
+    val_generator = AugmentedSequence(
+        X_val,
+        y_val,
         batch_size=16,
+        augment=False,
+        shuffle=False
+    )
+
+
+    history = modell.fit(
+        train_generator,
+        validation_data=val_generator,
+        epochs=150,
         callbacks=callbacks,
         verbose=2,
     )
+
     mlflow.log_param("tatsaechliche_epochen", len(history.history["loss"]))
 
     test_loss, test_acc = modell.evaluate(X_test, y_test, verbose=0)
@@ -426,6 +452,7 @@ with mlflow.start_run(run_name=batch_name):
     mlflow.log_param("anzahl_train_samples", X_train.shape[0])
     mlflow.log_param("anzahl_val_samples", X_val.shape[0])
     mlflow.log_param("anzahl_test_samples", X_test.shape[0])
+    mlflow.log_param("augmentation_aktiv", AUGMENTIERUNG_AKTIV)
     mlflow.log_param("architekturen_im_vergleich", list(MODELL_VARIANTEN.keys()))
 
     for architektur_name, builder_fn in MODELL_VARIANTEN.items():
