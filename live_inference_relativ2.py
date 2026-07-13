@@ -7,7 +7,7 @@ also den urspruenglichen 4 Gesten: wischen_rechts, wischen_links,
 kreis_uhrzeigersinn, kreis_gegen_uhrzeigersinn).
 
 NEU gegenueber live_inference_relativ.py -- zwei Verbesserungen aus
-live_inference_newGesture.py, aber OHNE die neuen Gesten/das Pinch-Feature:
+live_inference_newGesture_with_Actions.py, aber OHNE die neuen Gesten/das Pinch-Feature:
 
 1. Aktivierungs-Check "Hand ueber Handgelenk": Es wird nur erkannt, wenn
    die Fingerspitzen im Bild ueber (kleineres y als) dem Handgelenk liegen.

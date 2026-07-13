@@ -82,27 +82,20 @@ from tensorflow.keras.layers import (
 )
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.utils import to_categorical
-from augmentation_generator import AugmentedSequence
 
 parser = argparse.ArgumentParser(description="Trainiert und vergleicht mehrere Gesten-Modell-Architekturen.")
 parser.add_argument("--daten-ordner", type=str, default="trainingsdaten",
-                     help="Ordner mit den Trainingsdaten, z.B. trainingsdaten "
-                          "oder trainingsdaten_relativ (Standard: trainingsdaten)")
-parser.add_argument(
-    "--no-augmentation",
-    action="store_true",
-    help="Deaktiviert die Datenaugmentation"
-)
+                    help="Ordner mit den Trainingsdaten, z.B. trainingsdaten "
+                         "oder trainingsdaten_relativ (Standard: trainingsdaten)")
 args = parser.parse_args()
 
 DATEN_ORDNER = args.daten_ordner
-AUGMENTIERUNG_AKTIV = not args.no_augmentation
 MODELLE_BASIS_ORDNER = "modelle"
 
 # --- MLflow Konfiguration ---
 # MLflow >= 3.x setzt den reinen Datei-Tracking-Modus ("./mlruns") in den
 # Maintenance Mode und verlangt standardmaessig ein Datenbank-Backend.
-MLFLOW_EXPERIMENT_NAME = "gesture_recognition_vergleich"
+MLFLOW_EXPERIMENT_NAME = "gesture_recognition_vergleich_v2"
 mlflow.set_tracking_uri("sqlite:///mlflow.db")
 mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
@@ -294,7 +287,7 @@ MODELL_VARIANTEN = {
 # ---------------------------------------------------------------------------
 
 def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
-                             X_val, y_val, X_test, y_test, label_map, sub_ordner):
+                            X_val, y_val, X_test, y_test, label_map, sub_ordner):
     os.makedirs(sub_ordner, exist_ok=True)
     modell_datei = os.path.join(sub_ordner, "gesture_model.h5")
     label_map_datei = os.path.join(sub_ordner, "label_map.json")
@@ -323,30 +316,14 @@ def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
         MlflowEpochLogger(),
     ]
 
-    train_generator = AugmentedSequence(
-    X_train,
-    y_train,
-    batch_size=16,
-    augment=AUGMENTIERUNG_AKTIV
-    )
-
-    val_generator = AugmentedSequence(
-        X_val,
-        y_val,
-        batch_size=16,
-        augment=False,
-        shuffle=False
-    )
-
-
     history = modell.fit(
-        train_generator,
-        validation_data=val_generator,
+        X_train, y_train,
+        validation_data=(X_val, y_val),
         epochs=150,
+        batch_size=16,
         callbacks=callbacks,
         verbose=2,
     )
-
     mlflow.log_param("tatsaechliche_epochen", len(history.history["loss"]))
 
     test_loss, test_acc = modell.evaluate(X_test, y_test, verbose=0)
@@ -456,7 +433,6 @@ with mlflow.start_run(run_name=batch_name):
     mlflow.log_param("anzahl_train_samples", X_train.shape[0])
     mlflow.log_param("anzahl_val_samples", X_val.shape[0])
     mlflow.log_param("anzahl_test_samples", X_test.shape[0])
-    mlflow.log_param("augmentation_aktiv", AUGMENTIERUNG_AKTIV)
     mlflow.log_param("architekturen_im_vergleich", list(MODELL_VARIANTEN.keys()))
 
     for architektur_name, builder_fn in MODELL_VARIANTEN.items():

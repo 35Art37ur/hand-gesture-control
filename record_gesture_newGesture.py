@@ -12,7 +12,7 @@ Gesten-Klassen:
                                          Finger zusammen = rauszoomen)
 
 Hinweis: Eine gesonderte 'Faust'-Ruhegeste ist nicht mehr noetig -- Ruhe-
-pausen werden in live_inference_newGesture.py stattdessen ueber den
+pausen werden in live_inference_newGesture_with_Actions.py stattdessen ueber den
 Aktivierungs-Check "Hand ueber Handgelenk" abgedeckt (Hand haengen lassen
 statt Faust ballen).
 

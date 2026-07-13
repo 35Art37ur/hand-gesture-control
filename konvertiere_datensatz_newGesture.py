@@ -132,4 +132,4 @@ print(f"     python record_gesture_newGesture.py --geste wischen_unten --ausgabe
 print(f"     python record_gesture_newGesture.py --geste pinch_auf --ausgabe-ordner {args.ziel}")
 print(f"     python record_gesture_newGesture.py --geste pinch_zu --ausgabe-ordner {args.ziel}")
 print(f"  2. Trainieren: python train_model.py --daten-ordner {args.ziel}")
-print("  3. Testen: python live_inference_newGesture.py")
+print("  3. Testen: python live_inference_newGesture_with_Actions.py")
