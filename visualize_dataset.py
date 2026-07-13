@@ -75,7 +75,8 @@ SCALE = 500
 for idx in indices:
 
     daten = np.load(os.path.join(input_folder, dateien[idx]))
-
+    print(daten.shape)
+    print(np.array2string(daten))
     print(f"\nAnzeige: {dateien[idx]}")
 
     for frame_nr, frame in enumerate(daten):

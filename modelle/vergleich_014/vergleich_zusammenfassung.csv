@@ -1,0 +1,4 @@
+architektur,anzahl_parameter,test_accuracy,test_loss,epochen
+GRU_lr_0005,12504,0.9215,0.2433,57
+GRU_lr_001,12504,0.9090,0.3413,29
+GRU_lr_0001,12504,0.8431,0.4516,104

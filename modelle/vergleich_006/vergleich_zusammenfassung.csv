@@ -1,4 +1,4 @@
 architektur,anzahl_parameter,test_accuracy,test_loss,epochen
-gru_klein,22732,0.9778,0.0921,84
-lstm_mittel,47140,0.9611,0.1580,87
-cnn_gross,157444,0.9278,0.1815,50
+gru_gross,117576,0.9097,0.3456,37
+gru_mittel,36264,0.8903,0.3699,27
+gru_klein,12504,0.8569,0.4991,45

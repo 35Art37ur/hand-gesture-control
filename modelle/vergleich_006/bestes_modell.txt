@@ -1,1 +1,1 @@
-gru_klein
+gru_gross

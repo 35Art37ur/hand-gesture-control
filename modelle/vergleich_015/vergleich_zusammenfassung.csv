@@ -1,0 +1,4 @@
+architektur,anzahl_parameter,test_accuracy,test_loss,epochen
+GRU_pat_30,12504,0.9104,0.3612,62
+GRU_pat_40,12504,0.7951,0.5884,67
+GRU_pat_20,12504,0.7819,0.6344,36

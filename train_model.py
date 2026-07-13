@@ -60,6 +60,7 @@ import argparse
 import json
 import os
 import re
+import time
 
 import matplotlib
 matplotlib.use("Agg")  # kein Display noetig, nur Datei speichern
@@ -69,7 +70,8 @@ import mlflow.keras
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
-from tensorflow.keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import Callback, EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.layers import (
     Conv1D,
     Dense,
@@ -212,45 +214,86 @@ def lade_daten(daten_ordner):
 #   komplett, waere v.a. als Sanity-Check interessant, nicht als ernsthafter
 #   Kandidat fuer die beste Loesung.
 
-def baue_modell_gru(sequenz_laenge, feature_dim, anzahl_klassen):
+def baue_modell_gru_klein(sequenz_laenge, feature_dim, anzahl_klassen):
     modell = Sequential([
         Input(shape=(sequenz_laenge, feature_dim)),
-        Masking(mask_value=0.0),
-        GRU(48, return_sequences=True, activation="tanh"),
-        Dropout(0.3),
-        GRU(24, return_sequences=False, activation="tanh"),
-        Dropout(0.3),
-        Dense(24, activation="relu"),
-        Dense(anzahl_klassen, activation="softmax"),
+        Masking(mask_value=0.0), # was mit fehlenden werten gemacht wird. Gibt es bei unsnicht
+        GRU(32, return_sequences=True, activation="tanh"), # Gru schichten sind der standard fuer Sequenzen 48 ist die Anzahl der Neuronen in der Schicht
+        Dropout(0.35), #30% der Neuronen werden deactiviert
+        GRU(16, return_sequences=False, activation="tanh"), #zweite GRU-schicht mit 24 layern
+        Dropout(0.35),
+        Dense(16, activation="relu"), # erste Vostaendig verbundene schicht
+        Dense(anzahl_klassen, activation="softmax"), # Ausgabeschicht
     ], name="gru_klein")
 
     hyperparameter = {
         "architektur": "GRU",
-        "layer_1_units": 48,
-        "layer_2_units": 24,
-        "dense_units": 24,
-        "dropout_rate": 0.3,
+        "layer_1_units": 32,
+        "layer_2_units": 16,
+        "dense_units": 16,
+        "dropout_rate": 0.35,
     }
     return modell, hyperparameter
 
+def baue_modell_gru_mittel(sequenz_laenge, feature_dim, anzahl_klassen):
+    modell = Sequential([
+        Input(shape=(sequenz_laenge, feature_dim)),
+        Masking(mask_value=0.0), # was mit fehlenden werten gemacht wird. Gibt es bei unsnicht
+        GRU(32, return_sequences=True, activation="tanh"), # Gru schichten sind der standard fuer Sequenzen 48 ist die Anzahl der Neuronen in der Schicht
+        Dropout(0.45), #30% der Neuronen werden deactiviert
+        GRU(16, return_sequences=False, activation="tanh"), #zweite GRU-schicht mit 24 layern
+        Dropout(0.45),
+        Dense(16, activation="relu"), # erste Vostaendig verbundene schicht
+        Dense(anzahl_klassen, activation="softmax"), # Ausgabeschicht
+    ], name="gru_klein")
+
+    hyperparameter = {
+        "architektur": "GRU",
+        "layer_1_units": 32,
+        "layer_2_units": 16,
+        "dense_units": 16,
+        "dropout_rate": 0.4,
+    }
+    return modell, hyperparameter
+
+def baue_modell_gru_gross(sequenz_laenge, feature_dim, anzahl_klassen):
+    modell = Sequential([
+        Input(shape=(sequenz_laenge, feature_dim)),
+        Masking(mask_value=0.0), # was mit fehlenden werten gemacht wird. Gibt es bei unsnicht
+        GRU(32, return_sequences=True, activation="tanh"), # Gru schichten sind der standard fuer Sequenzen 48 ist die Anzahl der Neuronen in der Schicht
+        Dropout(0.5), #30% der Neuronen werden deactiviert
+        GRU(16, return_sequences=False, activation="tanh"), #zweite GRU-schicht mit 24 layern
+        Dropout(0.5),
+        Dense(16, activation="relu"), # erste Vostaendig verbundene schicht
+        Dense(anzahl_klassen, activation="softmax"), # Ausgabeschicht
+    ], name="gru_klein")
+
+    hyperparameter = {
+        "architektur": "GRU",
+        "layer_1_units": 32,
+        "layer_2_units": 16,
+        "dense_units": 16,
+        "dropout_rate": 0.5,
+    }
+    return modell, hyperparameter
 
 def baue_modell_lstm(sequenz_laenge, feature_dim, anzahl_klassen):
     modell = Sequential([
         Input(shape=(sequenz_laenge, feature_dim)),
         Masking(mask_value=0.0),
-        LSTM(64, return_sequences=True, activation="tanh"),
+        LSTM(128, return_sequences=True, activation="tanh"),
         Dropout(0.3),
-        LSTM(32, return_sequences=False, activation="tanh"),
+        LSTM(128, return_sequences=False, activation="tanh"),
         Dropout(0.3),
-        Dense(32, activation="relu"),
+        Dense(64, activation="relu"),
         Dense(anzahl_klassen, activation="softmax"),
     ], name="lstm_mittel")
 
     hyperparameter = {
         "architektur": "LSTM",
-        "layer_1_units": 64,
-        "layer_2_units": 32,
-        "dense_units": 32,
+        "layer_1_units": 128,
+        "layer_2_units": 128,
+        "dense_units": 64,
         "dropout_rate": 0.3,
     }
     return modell, hyperparameter
@@ -262,20 +305,20 @@ def baue_modell_cnn(sequenz_laenge, feature_dim, anzahl_klassen):
     # lang sind (kein Zero-Padding im Datensatz vorhanden).
     modell = Sequential([
         Input(shape=(sequenz_laenge, feature_dim)),
-        Conv1D(filters=128, kernel_size=3, padding="same", activation="relu"),
         Conv1D(filters=256, kernel_size=3, padding="same", activation="relu"),
+        Conv1D(filters=512, kernel_size=3, padding="same", activation="relu"),
         GlobalAveragePooling1D(),
         Dropout(0.4),
-        Dense(128, activation="relu"),
+        Dense(265, activation="relu"),
         Dense(anzahl_klassen, activation="softmax"),
     ], name="cnn_gross")
 
     hyperparameter = {
         "architektur": "1D-CNN",
-        "conv1_filters": 128,
-        "conv2_filters": 256,
+        "conv1_filters": 265,
+        "conv2_filters": 512,
         "kernel_size": 3,
-        "dense_units": 128,
+        "dense_units": 265,
         "dropout_rate": 0.4,
     }
     return modell, hyperparameter
@@ -283,9 +326,11 @@ def baue_modell_cnn(sequenz_laenge, feature_dim, anzahl_klassen):
 
 # Registry: neue Architekturen koennen hier einfach ergaenzt werden.
 MODELL_VARIANTEN = {
-    "gru_klein": baue_modell_gru,
-    "lstm_mittel": baue_modell_lstm,
-    "cnn_gross": baue_modell_cnn,
+    "GRU_no_early_stop": (baue_modell_gru_mittel, 0.0005, 16, 20),
+    #"GRU_pat_30": (baue_modell_gru_mittel, 0.0005, 16, 30),
+    #"GRU_pat_40": (baue_modell_gru_mittel, 0.0005, 16, 40),
+    #"lstm": baue_modell_lstm,
+    #"cnn": baue_modell_cnn,
 }
 
 
@@ -293,7 +338,7 @@ MODELL_VARIANTEN = {
 # 3. Eine einzelne Architektur trainieren + evaluieren
 # ---------------------------------------------------------------------------
 
-def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
+def trainiere_und_evaluiere(architektur_name, builder_fn, learning_rate, batch_size, patience, X_train, y_train,
                              X_val, y_val, X_test, y_test, label_map, sub_ordner):
     os.makedirs(sub_ordner, exist_ok=True)
     modell_datei = os.path.join(sub_ordner, "gesture_model.h5")
@@ -309,7 +354,8 @@ def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
     print(f"\n{'=' * 70}\nTrainiere Architektur: {architektur_name}\n{'=' * 70}")
 
     modell, hyperparameter = builder_fn(sequenz_laenge, feature_dim, anzahl_klassen)
-    modell.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    modell.compile(optimizer=Adam(learning_rate=learning_rate), loss="categorical_crossentropy", metrics=["accuracy"])
+    mlflow.log_param("learning_rate", learning_rate)
     modell.summary()
 
     anzahl_parameter = modell.count_params()
@@ -318,7 +364,8 @@ def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
     mlflow.log_param("anzahl_modell_parameter", anzahl_parameter)
 
     callbacks = [
-        EarlyStopping(monitor="val_loss", patience=15, restore_best_weights=True),
+        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1,),
+        EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True),
         ModelCheckpoint(modell_datei, monitor="val_accuracy", save_best_only=True),
         MlflowEpochLogger(),
     ]
@@ -326,26 +373,30 @@ def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
     train_generator = AugmentedSequence(
     X_train,
     y_train,
-    batch_size=16,
-    augment=AUGMENTIERUNG_AKTIV
+    batch_size=batch_size,
+    augment=False
     )
 
     val_generator = AugmentedSequence(
         X_val,
         y_val,
-        batch_size=16,
+        batch_size=batch_size,
         augment=False,
         shuffle=False
     )
 
-
+    startzeit = time.time()
     history = modell.fit(
         train_generator,
         validation_data=val_generator,
-        epochs=150,
+        epochs=300,
         callbacks=callbacks,
         verbose=2,
     )
+
+    endzeit = time.time()
+    trainingszeit = endzeit - startzeit
+    mlflow.log_metric("trainingszeit_sekunden", trainingszeit)
 
     mlflow.log_param("tatsaechliche_epochen", len(history.history["loss"]))
 
@@ -413,10 +464,14 @@ def trainiere_und_evaluiere(architektur_name, builder_fn, X_train, y_train,
 
     return {
         "architektur": architektur_name,
+        "learning_rate": learning_rate,
+        "batch_size": batch_size,
+        "patience": patience,
         "anzahl_parameter": anzahl_parameter,
         "test_accuracy": test_acc,
         "test_loss": test_loss,
         "epochen": len(history.history["loss"]),
+        "trainingszeit": trainingszeit,
         "ordner": sub_ordner,
     }
 
@@ -459,11 +514,11 @@ with mlflow.start_run(run_name=batch_name):
     mlflow.log_param("augmentation_aktiv", AUGMENTIERUNG_AKTIV)
     mlflow.log_param("architekturen_im_vergleich", list(MODELL_VARIANTEN.keys()))
 
-    for architektur_name, builder_fn in MODELL_VARIANTEN.items():
+    for architektur_name, (builder_fn, learning_rate, batch_size, patience) in MODELL_VARIANTEN.items():
         sub_ordner = os.path.join(batch_ordner, architektur_name)
         with mlflow.start_run(run_name=f"{batch_name}_{architektur_name}", nested=True):
             ergebnis = trainiere_und_evaluiere(
-                architektur_name, builder_fn,
+                architektur_name, builder_fn, learning_rate, batch_size, patience,
                 X_train, y_train, X_val, y_val, X_test, y_test,
                 label_map, sub_ordner
             )
@@ -515,8 +570,16 @@ with mlflow.start_run(run_name=batch_name):
     print(f"{'=' * 70}")
     for r in ergebnisse_sortiert:
         markierung = "  <-- BESTES MODELL" if r is bestes else ""
-        print(f"{r['architektur']:15s}  Test-Acc: {r['test_accuracy']:.3f}  "
-              f"Parameter: {r['anzahl_parameter']:>7}  Epochen: {r['epochen']:>3}{markierung}")
+        print(
+            f"{r['architektur']:15s}  "
+            f"Test-Acc: {r['test_accuracy']:.3f}  "
+            f" LR: {r['learning_rate']:.0e}  "
+            f"Patience: {r['patience']:>3}  "
+            f"Parameter: {r['anzahl_parameter']:>7}  "
+            f"Epochen: {r['epochen']:>3}  "
+            f"Trainingszeit: {r['trainingszeit']:>7.2f}s"
+            f"{markierung}"
+        )
     print(f"\nAlle Modelle gespeichert unter: {batch_ordner}")
     print(f"Empfohlenes Modell fuer live_inference*.py: {bestes['architektur']}")
     print("\nStarte 'mlflow ui --backend-store-uri sqlite:///mlflow.db' und oeffne")
