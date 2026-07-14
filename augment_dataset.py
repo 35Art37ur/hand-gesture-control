@@ -34,8 +34,8 @@ SCALE = 400
 # -------------------------------------------------------------
 
 def augment_sequence(sequence,
-                     min_zoom=0.5,
-                     max_zoom=2):
+                     min_zoom=0.95,
+                     max_zoom=1.05):
 
     augmented = sequence.copy()
 

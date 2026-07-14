@@ -326,7 +326,7 @@ def baue_modell_cnn(sequenz_laenge, feature_dim, anzahl_klassen):
 
 # Registry: neue Architekturen koennen hier einfach ergaenzt werden.
 MODELL_VARIANTEN = {
-    "GRU_no_early_stop": (baue_modell_gru_mittel, 0.0005, 16, 20),
+    "GRU_augment_0": (baue_modell_gru_mittel, 0.0005, 16, 20),
     #"GRU_pat_30": (baue_modell_gru_mittel, 0.0005, 16, 30),
     #"GRU_pat_40": (baue_modell_gru_mittel, 0.0005, 16, 40),
     #"lstm": baue_modell_lstm,

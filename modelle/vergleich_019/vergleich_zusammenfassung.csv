@@ -1,2 +1,2 @@
 architektur,anzahl_parameter,test_accuracy,test_loss,epochen
-GRU_no_early_stop,12504,0.9500,0.2176,76
+GRU_augment_0,12504,0.9764,0.0744,90
