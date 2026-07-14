@@ -15,11 +15,11 @@ hand_landmarker.task
 # Trainingsdaten (meist zu groß fürs Repo + ggf. personenbezogen)
 
 # Trainiertes Modell (optional: auskommentieren, falls du es versionieren willst)
-gesture_model.h5
-label_map.json
-training_history.png
-confusion_matrix.png
-classification_report.txt
+#gesture_model.h5
+#label_map.json
+#training_history.png
+#confusion_matrix.png
+#classification_report.txt
 
 # MLflow Tracking-Daten (enthaelt Modell-Kopien pro Run, wird schnell gross)
 mlruns/

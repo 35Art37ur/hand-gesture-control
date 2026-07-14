@@ -1,0 +1,14 @@
+                           precision    recall  f1-score   support
+
+kreis_gegen_uhrzeigersinn       0.98      0.97      0.97       180
+      kreis_uhrzeigersinn       0.94      0.97      0.95       180
+                pinch_auf       0.98      0.98      0.98       180
+                 pinch_zu       0.99      0.98      0.99       180
+            wischen_links       0.99      0.98      0.98       180
+             wischen_oben       0.98      0.99      0.98       180
+           wischen_rechts       0.98      0.94      0.96       180
+            wischen_unten       0.98      1.00      0.99       180
+
+                 accuracy                           0.98      1440
+                macro avg       0.98      0.98      0.98      1440
+             weighted avg       0.98      0.98      0.98      1440
