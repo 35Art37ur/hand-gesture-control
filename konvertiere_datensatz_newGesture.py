@@ -29,7 +29,7 @@ import numpy as np
 
 
 def normalisiere_sequenz(sequenz):
-    """Identisch zu record_gesture_relativ.py / record_gesture_newGesture.py."""
+    """Identisch zu record_gesture_relativ.py / record_gesture.py."""
     sequenz = np.array(sequenz, dtype=np.float32).copy()
     wrist_start = sequenz[0, 0:3].copy()
     delta = sequenz[:, 0:3] - wrist_start
@@ -127,9 +127,9 @@ print(f"\nFertig. {gesamt_konvertiert} Dateien konvertiert{zusatz_gesamt}")
 print(f"Erweiterte Daten liegen in: {args.ziel}")
 print("\nNaechste Schritte:")
 print("  1. Neue Gesten aufnehmen, direkt in denselben Ordner:")
-print(f"     python record_gesture_newGesture.py --geste wischen_oben --ausgabe-ordner {args.ziel}")
-print(f"     python record_gesture_newGesture.py --geste wischen_unten --ausgabe-ordner {args.ziel}")
-print(f"     python record_gesture_newGesture.py --geste pinch_auf --ausgabe-ordner {args.ziel}")
-print(f"     python record_gesture_newGesture.py --geste pinch_zu --ausgabe-ordner {args.ziel}")
+print(f"     python record_gesture.py --geste wischen_oben --ausgabe-ordner {args.ziel}")
+print(f"     python record_gesture.py --geste wischen_unten --ausgabe-ordner {args.ziel}")
+print(f"     python record_gesture.py --geste pinch_auf --ausgabe-ordner {args.ziel}")
+print(f"     python record_gesture.py --geste pinch_zu --ausgabe-ordner {args.ziel}")
 print(f"  2. Trainieren: python train_model.py --daten-ordner {args.ziel}")
 print("  3. Testen: python live_inference_newGesture_with_Actions.py")

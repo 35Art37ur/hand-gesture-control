@@ -1,21 +1,43 @@
 """
 record_gesture.py
-------------------
-Nimmt Trainingsdaten fuer EINE dynamische Geste auf.
+------------------------------
+Wie record_gesture_relativ.py, aber mit einem zusaetzlichen 67. Feature-Wert
+pro Frame fuer die neue Pinch/Zoom-Geste. Gedacht fuer die neuen
+Gesten-Klassen:
+
+    wischen_oben, wischen_unten        (vertikales Wischen, wie das
+                                         bestehende horizontale Wischen,
+                                         nur um 90 Grad gedreht)
+    pinch_auf, pinch_zu                (Finger auseinander = reinzoomen,
+                                         Finger zusammen = rauszoomen)
+
+Hinweis: Eine gesonderte 'Faust'-Ruhegeste ist nicht mehr noetig -- Ruhe-
+pausen werden in live_inference_newGesture_with_Actions.py stattdessen ueber den
+Aktivierungs-Check "Hand ueber Handgelenk" abgedeckt (Hand haengen lassen
+statt Faust ballen).
+
+NEUES FEATURE (Spalte 66, zusaetzlich zu den bisherigen 66 Werten):
+Abstand zwischen Daumenspitze (Landmark 4) und Zeigefingerspitze
+(Landmark 8), normiert auf die Handgroesse (Referenz: Abstand Handgelenk
+zu Mittelfinger-Grundgelenk, Landmark 9). Die Normierung macht den Wert
+unabhaengig davon, wie nah die Hand an der Kamera ist.
+
+Die Wrist-Trajektorie (Spalte 0:3) wird wie in record_gesture_relativ.py
+positions-/groessenunabhaengig normalisiert. Die 63 Handform-Werte
+(Spalte 3:66) bleiben unveraendert. Neu ist nur Spalte 66 (Pinch-Feature).
+
+WICHTIG: Dieses Skript ist bewusst NEU und ersetzt KEINES der bestehenden
+Skripte (record_gesture.py, record_gesture_relativ.py bleiben unveraendert
+erhalten). Falls sich die neuen Gesten nicht gut trainieren lassen, kannst
+du einfach zu den bewaehrten Skripten zurueckkehren.
 
 Aufruf (Beispiel):
-    python record_gesture.py --geste wischen_rechts --samples 100
+    python record_gesture.py --geste wischen_oben --samples 100
+    python record_gesture.py --geste pinch_auf --samples 100
 
 Steuerung im Fenster:
     's' = eine Aufnahme (Sequenz) starten
     'q' = Aufnahme beenden / Programm verlassen
-
-WICHTIG: Fuehre dieses Skript fuer JEDE der 4 Gesten separat aus:
-    python record_gesture.py --geste wischen_rechts
-    python record_gesture.py --geste wischen_links
-    python record_gesture.py --geste kreis_uhrzeigersinn
-
-
 """
 
 import argparse
@@ -27,41 +49,38 @@ import time
 import urllib.request
 
 # --- KONFIGURATION ---
-SEQUENZ_LAENGE = 20  # Wie viele Frames hat eine Geste?
+SEQUENZ_LAENGE = 20
 
-parser = argparse.ArgumentParser(description="Nimmt Trainingsdaten fuer eine dynamische Handgeste auf.")
+parser = argparse.ArgumentParser(description="Nimmt Trainingsdaten fuer neue Gesten auf (vertikales Wischen, Pinch/Zoom).")
 parser.add_argument("--geste", type=str, required=True,
-                     help="Name der Geste, z.B. wischen_rechts, wischen_links, "
-                          "kreis_uhrzeigersinn, kreis_gegen_uhrzeigersinn")
+                    help="Name der Geste, z.B. wischen_oben, wischen_unten, pinch_auf, pinch_zu")
 parser.add_argument("--samples", type=int, default=100,
-                     help="Anzahl der aufzunehmenden Sequenzen (Standard: 100)")
+                    help="Anzahl der aufzunehmenden Sequenzen (Standard: 100)")
 parser.add_argument("--seq-laenge", type=int, default=SEQUENZ_LAENGE,
-                     help=f"Anzahl Frames pro Sequenz (Standard: {SEQUENZ_LAENGE})")
+                    help=f"Anzahl Frames pro Sequenz (Standard: {SEQUENZ_LAENGE})")
+parser.add_argument("--ausgabe-ordner", type=str, default="trainingsdaten_newGesture",
+                    help="Zielordner fuer die Aufnahmen (Standard: trainingsdaten_newGesture)")
 args = parser.parse_args()
 
 GESTE_NAME = args.geste
 ANZAHL_SAMPLES = args.samples
 SEQUENZ_LAENGE = args.seq_laenge
-SPEICHER_ORDNER = os.path.join("trainingsdaten", GESTE_NAME)
+SPEICHER_ORDNER = os.path.join(args.ausgabe_ordner, GESTE_NAME)
 
 os.makedirs(SPEICHER_ORDNER, exist_ok=True)
 
-# Bereits vorhandene Samples zaehlen, damit wir nicht ueberschreiben,
-# falls die Aufnahme in mehreren Sitzungen stattfindet
 vorhandene_dateien = [f for f in os.listdir(SPEICHER_ORDNER) if f.endswith(".npy")]
 start_index = len(vorhandene_dateien)
 if start_index > 0:
     print(f"Es sind bereits {start_index} Samples fuer '{GESTE_NAME}' vorhanden. "
           f"Es wird ab sample_{start_index} weiter aufgenommen.")
 
-# 1. Das .task Modell herunterladen, falls nicht vorhanden
 MODEL_PATH = "hand_landmarker.task"
 if not os.path.exists(MODEL_PATH):
     print("Lade aktuelles MediaPipe Task-Modell herunter...")
     url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
     urllib.request.urlretrieve(url, MODEL_PATH)
 
-# 2. MediaPipe Tasks initialisieren
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
@@ -84,33 +103,58 @@ def draw_landmarks_on_image(image, detection_result):
     return image
 
 
-def extrahiere_features(hand_landmarks):
-    """
-    Baut einen Feature-Vektor pro Frame:
-      - 3 Werte: absolute Wrist-Position (x, y, z) -> wichtig fuer Wisch-/Kreis-Trajektorie
-      - 21 * 3 Werte: relative Position jedes Landmarks zur Wrist -> wichtig fuer Handform
-    => 66 Werte pro Frame insgesamt
-    """
+def extrahiere_rohdaten_erweitert(hand_landmarks):
+    """Wie extrahiere_rohdaten() aus record_gesture_relativ.py (3 absolute
+    Wrist-Werte + 21*3 relative Landmarks = 66 Werte), ZUSAETZLICH mit einem
+    67. Wert: Pinch-Distanz (Daumenspitze <-> Zeigefingerspitze), normiert
+    auf die Handgroesse."""
     wrist = hand_landmarks[0]
     wrist_x, wrist_y, wrist_z = wrist.x, wrist.y, wrist.z
 
-    frame_koordinaten = [wrist_x, wrist_y, wrist_z]  # absolute Wrist-Position (fuer Trajektorie)
-
+    frame_koordinaten = [wrist_x, wrist_y, wrist_z]
     for lm in hand_landmarks:
         rel_x = lm.x - wrist_x
         rel_y = lm.y - wrist_y
         rel_z = lm.z - wrist_z
         frame_koordinaten.extend([rel_x, rel_y, rel_z])
 
+    # Pinch-Feature: Abstand Daumenspitze (Index 4) zu Zeigefingerspitze
+    # (Index 8), normiert auf Handgroesse (Abstand Handgelenk zu
+    # Mittelfinger-Grundgelenk, Index 9) fuer Kameraentfernungs-Unabhaengigkeit.
+    daumen = hand_landmarks[4]
+    zeigefinger = hand_landmarks[8]
+    mittelfinger_mcp = hand_landmarks[9]
+
+    rel_daumen = np.array([daumen.x - wrist_x, daumen.y - wrist_y, daumen.z - wrist_z])
+    rel_zeige = np.array([zeigefinger.x - wrist_x, zeigefinger.y - wrist_y, zeigefinger.z - wrist_z])
+    rel_mittel_mcp = np.array([mittelfinger_mcp.x - wrist_x, mittelfinger_mcp.y - wrist_y, mittelfinger_mcp.z - wrist_z])
+
+    pinch_distanz = float(np.linalg.norm(rel_daumen - rel_zeige))
+    hand_groesse_referenz = max(float(np.linalg.norm(rel_mittel_mcp)), 1e-6)
+    pinch_feature = pinch_distanz / hand_groesse_referenz
+
+    frame_koordinaten.append(pinch_feature)
     return frame_koordinaten
 
 
-# Webcam starten
+def normalisiere_sequenz(sequenz):
+    """Identisch zu record_gesture_relativ.py: macht NUR die ersten 3 Spalten
+    (Wrist-Trajektorie) positions-/groessenunabhaengig. Die restlichen Spalten
+    (Handform + Pinch-Feature) bleiben unveraendert."""
+    sequenz = np.array(sequenz, dtype=np.float32).copy()
+    wrist_start = sequenz[0, 0:3].copy()
+    delta = sequenz[:, 0:3] - wrist_start
+    radius = np.sqrt(delta[:, 0] ** 2 + delta[:, 1] ** 2 + delta[:, 2] ** 2)
+    scale = max(float(radius.max()), 1e-6)
+    sequenz[:, 0:3] = delta / scale
+    return sequenz
+
+
 cap = cv2.VideoCapture(0)
 sample_zaehler = start_index
 ziel = start_index + ANZAHL_SAMPLES
 
-print(f"Bereit zur Aufnahme fuer: '{GESTE_NAME}'")
+print(f"Bereit zur Aufnahme fuer: '{GESTE_NAME}' (mit Pinch-Feature)")
 print(f"Ziel: {ANZAHL_SAMPLES} neue Samples (insgesamt dann {ziel})")
 print("Druecke 's' auf der Tastatur, um eine Geste aufzunehmen. 'q' zum Beenden.")
 
@@ -132,7 +176,9 @@ with HandLandmarker.create_from_options(options) as landmarker:
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         cv2.putText(frame, "Druecke 's' fuer Start, 'q' zum Beenden", (10, 100),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.imshow("Data Recorder (Tasks API)", frame)
+        cv2.putText(frame, "Tipp: Position/Groesse im Bild bewusst variieren!", (10, 130),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 0), 1)
+        cv2.imshow("Data Recorder (neue Gesten)", frame)
 
         key = cv2.waitKey(1) & 0xFF
 
@@ -151,21 +197,20 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
                 if result.hand_landmarks:
                     hand_landmarks = result.hand_landmarks[0]
-                    frame_koordinaten = extrahiere_features(hand_landmarks)
+                    frame_koordinaten = extrahiere_rohdaten_erweitert(hand_landmarks)
                     sequenz_daten.append(frame_koordinaten)
                     frames_aufgenommen += 1
                     frame = draw_landmarks_on_image(frame, result)
-                # Wenn keine Hand erkannt wird, wird der Frame uebersprungen
-                # (frames_aufgenommen erhoeht sich nicht) -> es wird einfach weiter versucht
 
                 cv2.putText(frame, f"Recording Frame: {frames_aufgenommen}/{SEQUENZ_LAENGE}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                cv2.imshow("Data Recorder (Tasks API)", frame)
+                cv2.imshow("Data Recorder (neue Gesten)", frame)
                 cv2.waitKey(30)
 
             if len(sequenz_daten) == SEQUENZ_LAENGE:
+                sequenz_normalisiert = normalisiere_sequenz(sequenz_daten)
                 datei_name = os.path.join(SPEICHER_ORDNER, f"sample_{sample_zaehler}.npy")
-                np.save(datei_name, np.array(sequenz_daten, dtype=np.float32))
+                np.save(datei_name, sequenz_normalisiert)
                 sample_zaehler += 1
                 print(f"Gespeichert: {datei_name}")
                 time.sleep(0.4)

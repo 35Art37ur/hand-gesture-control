@@ -3,7 +3,7 @@ konvertiere_datensatz.py
 --------------------------
 Wandelt bestehende Aufnahmen aus trainingsdaten/ (absolute Wrist-Position +
 relative Landmarks) in das neue positions-/groessenunabhaengige Format um
-(siehe record_gesture_relativ.py) -- OHNE dass neu mit der Kamera
+(siehe record_gesture.py) -- OHNE dass neu mit der Kamera
 aufgenommen werden muss.
 
 Funktioniert, weil die alten .npy-Dateien bereits exakt die Rohdaten

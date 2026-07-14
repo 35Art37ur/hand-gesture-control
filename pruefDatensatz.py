@@ -8,7 +8,7 @@ unterschiedlichen Shapes bricht das Training sonst mit einem eher
 kryptischen Fehler ab ("could not broadcast input array" o.ae.).
 
 Besonders relevant, wenn Daten aus mehreren Quellen zusammengefuehrt wurden
-(z.B. record_gesture_newGesture.py UND konvertiere_datensatz_newGesture.py),
+(z.B. record_gesture.py UND konvertiere_datensatz_newGesture.py),
 da beide dieselbe Form (SEQUENZ_LAENGE, 67) erzeugen SOLLTEN, aber ein
 Versehen (z.B. --seq-laenge vergessen/anders gesetzt) das durchbrechen kann.
 

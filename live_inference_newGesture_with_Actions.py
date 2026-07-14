@@ -179,7 +179,7 @@ def draw_landmarks_on_image(image, detection_result):
 
 
 def extrahiere_rohdaten_erweitert(hand_landmarks):
-    """IDENTISCH zu record_gesture_newGesture.py: 66 Basis-Werte + 1
+    """IDENTISCH zu record_gesture.py: 66 Basis-Werte + 1
     Pinch-Feature (Spalte 66)."""
     wrist = hand_landmarks[0]
     wrist_x, wrist_y, wrist_z = wrist.x, wrist.y, wrist.z
@@ -208,7 +208,7 @@ def extrahiere_rohdaten_erweitert(hand_landmarks):
 
 
 def normalisiere_sequenz(sequenz):
-    """MUSS identisch zu record_gesture_newGesture.py sein. Betrifft nur
+    """MUSS identisch zu record_gesture.py sein. Betrifft nur
     Spalte 0:3 (Wrist-Trajektorie); Handform (3:66) und Pinch-Feature (66)
     bleiben unveraendert."""
     sequenz = np.array(sequenz, dtype=np.float32).copy()

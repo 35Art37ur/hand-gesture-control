@@ -24,6 +24,7 @@ classification_report.txt
 # MLflow Tracking-Daten (enthaelt Modell-Kopien pro Run, wird schnell gross)
 mlruns/
 mlflow.db
+modelle/
 
 # IDE
 .idea/
